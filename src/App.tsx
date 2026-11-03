@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
-  Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard, MonitorUp,
-  Plus, Pencil, Check, ListOrdered, Captions, Copy,
+  Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
+  Plus, Pencil, Check, ListOrdered, Captions, Copy, MonitorUp,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
@@ -293,7 +293,6 @@ export default function App() {
     }
   }
 
-
   // If the user stops sharing from the browser's own UI, stop cleanly
   const wireScreenEnded = (stream: MediaStream) => {
     stream.getVideoTracks()[0]?.addEventListener('ended', () => {
@@ -302,9 +301,13 @@ export default function App() {
     })
   }
 
-  // Follow-me fix: swap the captured surface WITHOUT stopping the take.
-  // The recorder consumes the canvas stream, so changing what the canvas
-  // draws is invisible to the recording — no cut, no new file.
+  // Follow-me: swap the captured surface WITHOUT stopping the take. The
+  // recorder consumes the canvas stream, so changing what the canvas draws
+  // is invisible to the recording — no cut, no new file. This is the fix for
+  // "I switched to another app and the recording didn't show it": a capture
+  // locked to one window/tab can never see another app (e.g. a Facebook
+  // login in a different window) — Entire Screen can, and this button lets
+  // you jump surfaces mid-demo.
   const switchScreen = async () => {
     const comp = compositorRef.current
     if (!comp) return
@@ -315,12 +318,10 @@ export default function App() {
       screenRef.current = next
       setSurface(captureSurface(next))
       wireScreenEnded(next)
-      // Stop the old surface's video (keep its audio track if it was feeding
-      // the recorder; mic comes from the camera stream and is unaffected)
       old?.getVideoTracks().forEach((tr) => tr.stop())
       setError('')
     } catch {
-      setError('Screen switch was cancelled — still recording the previous screen.')
+      setError('Screen switch was cancelled — still showing the previous screen.')
     }
   }
 
@@ -530,7 +531,7 @@ export default function App() {
                   <Monitor className="mx-auto text-slate-600" size={52} />
                   <p className="mt-4 font-semibold">No screen connected yet</p>
                   <p className="mx-auto mt-1 max-w-md text-sm text-slate-400">Set up once, then every demo is: hit Record, wait for the countdown, talk. Your face is composited into the top-right of the actual recording file — nothing to edit afterwards.</p>
-                  <p className="mx-auto mt-3 max-w-md rounded-xl border border-teal/30 bg-teal/10 px-3 py-2 text-xs leading-relaxed text-teal-100"><strong>To follow you across apps:</strong> in the share picker, choose <strong>Entire Screen</strong>. A single window or tab can only ever show itself — if you switch away, the recording can't see you. You can also hit <strong>Switch screen</strong> mid-recording to jump to a different screen/window without stopping the take.</p>
+                  <p className="mx-auto mt-3 max-w-md rounded-xl border border-teal/30 bg-teal/10 px-3 py-2 text-xs leading-relaxed text-teal-100"><strong>To follow you across apps:</strong> in the share picker choose <strong>Entire Screen</strong>. A single window or tab can only ever show itself — switch away (say, to a Facebook login in another window) and the recording can't see it until you come back. <strong>Switch screen</strong> also lets you jump surfaces mid-recording without stopping the take.</p>
                 </div>
               </div>
             )}
@@ -541,10 +542,10 @@ export default function App() {
             )}
             {phase === 'ready' && <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 text-xs text-teal-bright"><CheckCircle2 size={13} /> Preview live — check your facecam (top right), then Record</div>}
             {(phase === 'ready' || recording) && (
-              <div className={`absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs ${surface === 'monitor' ? 'bg-teal/80 text-ink font-semibold' : 'bg-amber-500/90 text-ink font-semibold'}`}>
+              <div className={`absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${surface === 'monitor' ? 'bg-teal/80 text-ink' : 'bg-amber-500/90 text-ink'}`}>
                 {surface === 'monitor'
-                  ? <>🖥 Following your whole screen — app &amp; window switches will be recorded</>
-                  : <>⚠ Locked to one {surface === 'browser' ? 'tab' : 'window'} — switches won't show. Use Switch screen → Entire Screen to follow you</>}
+                  ? <>Following your whole screen — app &amp; window switches will be recorded</>
+                  : <>Locked to one {surface === 'browser' ? 'tab' : 'window'} — switches won't show. Switch screen → Entire Screen follows you</>}
               </div>
             )}
           </div>
