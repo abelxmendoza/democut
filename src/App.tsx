@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
-  Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
+  Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard, MonitorUp,
   Plus, Pencil, Check, ListOrdered, Captions, Copy,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
-  formatTime, formatBytes, type PipSize, type Quality, type Take, type TakeMarker,
+  formatTime, formatBytes, captureSurface, type PipSize, type Quality, type Take, type TakeMarker,
 } from './lib/recorder'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
@@ -36,6 +36,7 @@ export default function App() {
   const [mirror, setMirror] = useState(true)
   const [nameTag, setNameTag] = useState(() => localStorage.getItem('democut-name-tag') ?? 'Abel Mendoza')
   const [micLevel, setMicLevel] = useState(0)
+  const [surface, setSurface] = useState('unknown')
 
   // ---- Projects ----------------------------------------------------------
   // Built-in presets are starting templates; user projects are created in
@@ -258,11 +259,8 @@ export default function App() {
     try {
       const screen = await getScreenStream(quality, fps, micOn)
       screenRef.current = screen
-      // If the user stops sharing from the browser UI, stop cleanly
-      screen.getVideoTracks()[0]?.addEventListener('ended', () => {
-        if (recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording()
-        else teardown()
-      })
+      setSurface(captureSurface(screen))
+      wireScreenEnded(screen)
 
       let cam: MediaStream | null = null
       if (cameraOn || micOn) {
@@ -295,6 +293,37 @@ export default function App() {
     }
   }
 
+
+  // If the user stops sharing from the browser's own UI, stop cleanly
+  const wireScreenEnded = (stream: MediaStream) => {
+    stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording()
+      else teardown()
+    })
+  }
+
+  // Follow-me fix: swap the captured surface WITHOUT stopping the take.
+  // The recorder consumes the canvas stream, so changing what the canvas
+  // draws is invisible to the recording — no cut, no new file.
+  const switchScreen = async () => {
+    const comp = compositorRef.current
+    if (!comp) return
+    try {
+      const next = await getScreenStream(quality, fps, micOn)
+      const old = screenRef.current
+      comp.setScreenStream(next)
+      screenRef.current = next
+      setSurface(captureSurface(next))
+      wireScreenEnded(next)
+      // Stop the old surface's video (keep its audio track if it was feeding
+      // the recorder; mic comes from the camera stream and is unaffected)
+      old?.getVideoTracks().forEach((tr) => tr.stop())
+      setError('')
+    } catch {
+      setError('Screen switch was cancelled — still recording the previous screen.')
+    }
+  }
+
   const teardown = () => {
     compositorRef.current?.stop()
     compositorRef.current = null
@@ -305,6 +334,7 @@ export default function App() {
     audioCtxRef.current?.close().catch(() => {})
     audioCtxRef.current = null
     setMicLevel(0)
+    setSurface('unknown')
     setElapsed(0)
     setPhase('idle')
     if (timerRef.current) window.clearInterval(timerRef.current)
@@ -500,6 +530,7 @@ export default function App() {
                   <Monitor className="mx-auto text-slate-600" size={52} />
                   <p className="mt-4 font-semibold">No screen connected yet</p>
                   <p className="mx-auto mt-1 max-w-md text-sm text-slate-400">Set up once, then every demo is: hit Record, wait for the countdown, talk. Your face is composited into the top-right of the actual recording file — nothing to edit afterwards.</p>
+                  <p className="mx-auto mt-3 max-w-md rounded-xl border border-teal/30 bg-teal/10 px-3 py-2 text-xs leading-relaxed text-teal-100"><strong>To follow you across apps:</strong> in the share picker, choose <strong>Entire Screen</strong>. A single window or tab can only ever show itself — if you switch away, the recording can't see you. You can also hit <strong>Switch screen</strong> mid-recording to jump to a different screen/window without stopping the take.</p>
                 </div>
               </div>
             )}
@@ -509,6 +540,13 @@ export default function App() {
               </div>
             )}
             {phase === 'ready' && <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 text-xs text-teal-bright"><CheckCircle2 size={13} /> Preview live — check your facecam (top right), then Record</div>}
+            {(phase === 'ready' || recording) && (
+              <div className={`absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs ${surface === 'monitor' ? 'bg-teal/80 text-ink font-semibold' : 'bg-amber-500/90 text-ink font-semibold'}`}>
+                {surface === 'monitor'
+                  ? <>🖥 Following your whole screen — app &amp; window switches will be recorded</>
+                  : <>⚠ Locked to one {surface === 'browser' ? 'tab' : 'window'} — switches won't show. Use Switch screen → Entire Screen to follow you</>}
+              </div>
+            )}
           </div>
 
           {error && <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{error}</div>}
@@ -519,11 +557,13 @@ export default function App() {
             )}
             {phase === 'ready' && (<>
               <button onClick={beginRecording} className="flex items-center gap-2 rounded-xl bg-red-500 px-5 py-3 font-semibold text-white hover:bg-red-400"><Circle size={17} fill="currentColor" /> Record (3-2-1)</button>
+              <button onClick={switchScreen} className="flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm text-slate-200 hover:bg-panel2"><MonitorUp size={15} /> Switch screen</button>
               <button onClick={teardown} className="rounded-xl border border-line px-4 py-3 text-sm text-slate-300 hover:bg-panel2">Disconnect</button>
             </>)}
             {recording && (<>
               <button onClick={pauseResume} className="flex items-center gap-2 rounded-xl bg-panel2 px-5 py-3 font-semibold ring-1 ring-line hover:bg-panel">{phase === 'paused' ? <><Play size={17} /> Resume</> : <><Pause size={17} /> Pause</>}</button>
               <button onClick={stopRecording} className="flex items-center gap-2 rounded-xl bg-red-500 px-5 py-3 font-semibold text-white hover:bg-red-400"><Square size={16} fill="currentColor" /> Stop &amp; save take</button>
+              <button onClick={switchScreen} className="flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm text-slate-200 hover:bg-panel2"><MonitorUp size={15} /> Switch screen</button>
             </>)}
             {phase === 'countdown' && <span className="px-2 py-3 text-sm text-slate-400">Recording starts automatically…</span>}
 

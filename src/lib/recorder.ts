@@ -49,22 +49,27 @@ export class Compositor {
     this.ctx = ctx
   }
 
-  attach(screenStream: MediaStream | null, camStream: MediaStream | null) {
-    if (screenStream) {
-      this.screenVideo = document.createElement('video')
-      this.screenVideo.srcObject = screenStream
-      this.screenVideo.muted = true
-      void this.screenVideo.play()
-      const track = screenStream.getVideoTracks()[0]
-      const s = track?.getSettings()
-      if (s?.width && s?.height) {
-        // Keep the canvas at the screen's real aspect/size (capped at target quality)
-        const cap = this.opts.quality === '1080p' ? 1920 : 1280
-        const scale = Math.min(1, cap / s.width)
-        this.canvas.width = Math.round(s.width * scale)
-        this.canvas.height = Math.round(s.height * scale)
-      }
+  /** Point the compositor at a (new) screen stream. Safe to call mid-recording:
+      the canvas stream the recorder is consuming never changes, only its source. */
+  setScreenStream(screenStream: MediaStream) {
+    const video = document.createElement('video')
+    video.srcObject = screenStream
+    video.muted = true
+    void video.play()
+    this.screenVideo = video
+    const track = screenStream.getVideoTracks()[0]
+    const s = track?.getSettings()
+    if (s?.width && s?.height) {
+      // Keep the canvas at the screen's real aspect/size (capped at target quality)
+      const cap = this.opts.quality === '1080p' ? 1920 : 1280
+      const scale = Math.min(1, cap / s.width)
+      this.canvas.width = Math.round(s.width * scale)
+      this.canvas.height = Math.round(s.height * scale)
     }
+  }
+
+  attach(screenStream: MediaStream | null, camStream: MediaStream | null) {
+    if (screenStream) this.setScreenStream(screenStream)
     if (camStream) {
       this.camVideo = document.createElement('video')
       this.camVideo.srcObject = camStream
@@ -182,10 +187,24 @@ export async function getScreenStream(quality: Quality, fps: number, micOn: bool
       width: { ideal: quality === '1080p' ? 1920 : 1280 },
       height: { ideal: quality === '1080p' ? 1080 : 720 },
       frameRate: { ideal: fps },
+      // Prefer the ENTIRE MONITOR: that's the surface that follows you when
+      // you switch apps/windows. A single window/tab can only ever show itself.
+      displaySurface: 'monitor',
     },
     audio: true, // system / tab audio where the browser supports it
+    // Chrome: keep the "share another surface instead" affordance available
+    surfaceSwitching: 'include',
+    selfBrowserSurface: 'include',
   } as DisplayMediaStreamOptions)
   return stream
+}
+
+/** What kind of surface is being captured: 'monitor' follows the user across
+    apps/windows; 'window' / 'browser' are locked to that one surface. */
+export function captureSurface(stream: MediaStream | null): string {
+  const track = stream?.getVideoTracks()[0]
+  const surface = track?.getSettings()?.displaySurface
+  return typeof surface === 'string' ? surface : 'unknown'
 }
 
 export async function getCameraStream(micOn: boolean): Promise<MediaStream> {
