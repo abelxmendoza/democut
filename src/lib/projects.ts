@@ -11,6 +11,19 @@ export interface ProjectPreset {
   script: string
 }
 
+// A project in the app: either a built-in preset above (a starting
+// template) or one the user created. User projects and per-preset
+// script/title edits persist in localStorage (see App).
+export interface Project extends ProjectPreset {
+  builtin: boolean
+}
+
+export const NEW_PROJECT_SCRIPT = `1. What it is — one sentence, who it's for
+2. The problem it solves — show the pain, don't just say it
+3. The main flow, end to end, no cuts
+4. The proof — output, tests, numbers ON SCREEN
+5. Close — what works today, what's next, where to find it`
+
 export const PRESETS: ProjectPreset[] = [
   {
     id: 'generic',

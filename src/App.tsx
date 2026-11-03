@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
   Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
+  Plus, Pencil, Check,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
@@ -10,7 +11,8 @@ import {
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
 import Editor from './components/Editor'
-import { PRESETS } from './lib/projects'
+import { PRESETS, NEW_PROJECT_SCRIPT, type Project } from './lib/projects'
+import { loadTakes, saveTake, deleteTake as idbDeleteTake, deleteTakesForProject } from './lib/takeStore'
 
 type Phase = 'idle' | 'ready' | 'countdown' | 'recording' | 'paused'
 
@@ -33,17 +35,99 @@ export default function App() {
   const [mirror, setMirror] = useState(true)
   const [micLevel, setMicLevel] = useState(0)
 
-  const [script, setScript] = useState(() => localStorage.getItem('democut-script') || DEFAULT_SCRIPT)
-  const [presetId, setPresetId] = useState('generic')
-  const [videoTitle, setVideoTitle] = useState('My Demo')
-  const preset = PRESETS.find((p) => p.id === presetId) ?? PRESETS[0]
-  const loadPreset = (id: string) => {
-    const p = PRESETS.find((x) => x.id === id) ?? PRESETS[0]
-    setPresetId(id)
-    setScript(p.script)
-    setVideoTitle(p.title)
+  // ---- Projects ----------------------------------------------------------
+  // Built-in presets are starting templates; user projects are created in
+  // the app. Everything persists in localStorage: user projects in full,
+  // plus per-project script/title/name/openFirst edits for any project.
+  const [projects, setProjects] = useState<Project[]>(() => {
+    let user: Project[] = []
+    let overrides: Record<string, Partial<Project>> = {}
+    let legacyScript: string | null = null
+    try {
+      user = JSON.parse(localStorage.getItem('democut-user-projects') || '[]') as Project[]
+      overrides = JSON.parse(localStorage.getItem('democut-project-overrides') || '{}') as Record<string, Partial<Project>>
+      legacyScript = localStorage.getItem('democut-script')
+    } catch { /* fresh start */ }
+    const builtins = PRESETS.map((p) => {
+      const base: Project = { ...p, builtin: true }
+      const o = overrides[p.id]
+      const merged = o ? { ...base, ...o, id: p.id, builtin: true } : base
+      // migrate the pre-projects single saved script onto the generic project
+      if (p.id === 'generic' && legacyScript && !o?.script) merged.script = legacyScript
+      return merged
+    })
+    return [...builtins, ...user.map((u) => ({ ...u, builtin: false }))]
+  })
+  const [projectId, setProjectId] = useState(() => localStorage.getItem('democut-current-project') || 'generic')
+  const project = projects.find((p) => p.id === projectId) ?? projects[0]
+  const [renaming, setRenaming] = useState(false)
+
+  // persist projects + the current selection
+  useEffect(() => {
+    try {
+      localStorage.setItem('democut-user-projects', JSON.stringify(projects.filter((p) => !p.builtin)))
+      const overrides: Record<string, Partial<Project>> = {}
+      for (const p of projects) {
+        if (!p.builtin) continue
+        const base = PRESETS.find((x) => x.id === p.id)
+        if (!base) continue
+        const o: Partial<Project> = {}
+        if (p.script !== base.script) o.script = p.script
+        if (p.title !== base.title) o.title = p.title
+        if (p.name !== base.name) o.name = p.name
+        if (p.openFirst !== base.openFirst) o.openFirst = p.openFirst
+        if (Object.keys(o).length) overrides[p.id] = o
+      }
+      localStorage.setItem('democut-project-overrides', JSON.stringify(overrides))
+      localStorage.setItem('democut-current-project', project.id)
+    } catch { /* storage blocked/full: app still works in-session */ }
+  }, [projects, project.id])
+
+  const patchProject = (patch: Partial<Project>) =>
+    setProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, ...patch } : p)))
+
+  const newProject = () => {
+    const p: Project = {
+      id: crypto.randomUUID(),
+      name: 'Untitled project',
+      title: 'Untitled project — Demo',
+      openFirst: 'Open the app you are demoing, full-screen, at the screen you will start from.',
+      script: NEW_PROJECT_SCRIPT,
+      builtin: false,
+    }
+    setProjects((prev) => [...prev, p])
+    setProjectId(p.id)
+    setRenaming(true)
   }
+
+  const removeProject = () => {
+    if (project.builtin) return
+    const n = takes.filter((t) => t.projectId === project.id).length
+    const msg = n > 0
+      ? `Delete "${project.name}" and its ${n} saved take${n === 1 ? '' : 's'}? This can't be undone.`
+      : `Delete "${project.name}"? This can't be undone.`
+    if (!window.confirm(msg)) return
+    void deleteTakesForProject(project.id)
+    setTakes((prev) => prev.filter((t) => t.projectId !== project.id))
+    setProjects((prev) => prev.filter((p) => p.id !== project.id))
+    setProjectId('generic')
+  }
+
+  // script + video title are views onto the current project
+  const script = project?.script ?? DEFAULT_SCRIPT
+  const setScript = (v: string) => patchProject({ script: v })
+  const videoTitle = project?.title ?? 'My Demo'
+  const setVideoTitle = (v: string) => patchProject({ title: v })
+
   const [takes, setTakes] = useState<Take[]>([])
+  const projectTakes = takes.filter((t) => t.projectId === project?.id)
+
+  const persistTake = (t: Take) => {
+    void saveTake({
+      id: t.id, projectId: t.projectId, name: t.name, duration: t.duration,
+      size: t.size, createdAt: t.createdAt.toISOString(), blob: t.blob,
+    })
+  }
 
   const previewRef = useRef<HTMLDivElement>(null)
   const compositorRef = useRef<Compositor | null>(null)
@@ -56,8 +140,23 @@ export default function App() {
   const pausedTotalRef = useRef(0)
   const pauseStartRef = useRef(0)
   const audioCtxRef = useRef<AudioContext | null>(null)
+  const recordingProjectRef = useRef('generic')
 
-  useEffect(() => { localStorage.setItem('democut-script', script) }, [script])
+  // hydrate saved takes from IndexedDB — they survive reloads, per project
+  useEffect(() => {
+    let live = true
+    void loadTakes().then((stored) => {
+      if (!live || !stored.length) return
+      const hydrated: Take[] = stored
+        .map((s) => ({
+          id: s.id, url: URL.createObjectURL(s.blob), blob: s.blob, name: s.name,
+          duration: s.duration, size: s.size, createdAt: new Date(s.createdAt), projectId: s.projectId,
+        }))
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      setTakes((prev) => [...hydrated.filter((h) => !prev.some((p) => p.id === h.id)), ...prev])
+    })
+    return () => { live = false }
+  }, [])
 
   // cleanup on unmount
   useEffect(() => () => {
@@ -144,6 +243,7 @@ export default function App() {
   const beginRecording = () => {
     const comp = compositorRef.current
     if (!comp) return
+    recordingProjectRef.current = project.id
     // keep compositor options in sync with toggles changed after setup
     comp.opts.pipSize = pipSize
     comp.opts.cameraOn = cameraOn
@@ -170,7 +270,7 @@ export default function App() {
       const ext = type.includes('mp4') ? 'mp4' : 'webm'
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
       const duration = (Date.now() - startRef.current - pausedTotalRef.current) / 1000
-      setTakes((prev) => [{
+      const take: Take = {
         id: crypto.randomUUID(),
         url: URL.createObjectURL(blob),
         blob,
@@ -178,7 +278,10 @@ export default function App() {
         duration,
         size: blob.size,
         createdAt: new Date(),
-      }, ...prev])
+        projectId: recordingProjectRef.current,
+      }
+      persistTake(take)
+      setTakes((prev) => [take, ...prev])
       teardown()
     }
     recorderRef.current = rec
@@ -245,7 +348,7 @@ export default function App() {
 
   const addEditedTake = (blob: Blob, durationSec: number) => {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-    setTakes((prev) => [{
+    const take: Take = {
       id: crypto.randomUUID(),
       url: URL.createObjectURL(blob),
       blob,
@@ -253,7 +356,10 @@ export default function App() {
       duration: durationSec,
       size: blob.size,
       createdAt: new Date(),
-    }, ...prev])
+      projectId: project.id,
+    }
+    persistTake(take)
+    setTakes((prev) => [take, ...prev])
   }
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -269,7 +375,7 @@ export default function App() {
         v.onerror = () => resolve(0)
         v.src = url
       })
-      setTakes((prev) => [{
+      const take: Take = {
         id: crypto.randomUUID(),
         url,
         blob: file,
@@ -277,7 +383,10 @@ export default function App() {
         duration,
         size: file.size,
         createdAt: new Date(),
-      }, ...prev])
+        projectId: project.id,
+      }
+      persistTake(take)
+      setTakes((prev) => [take, ...prev])
     }
   }
 
@@ -346,22 +455,22 @@ export default function App() {
           {/* Takes */}
           <div className="mt-6">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="flex items-center gap-2 font-semibold"><Clock3 size={17} className="text-teal-bright" /> Your takes {takes.length > 0 && <span className="text-sm font-normal text-slate-400">— saved in this session, download the keepers</span>}</h2>
+              <h2 className="flex items-center gap-2 font-semibold"><Clock3 size={17} className="text-teal-bright" /> Takes — {project.name} {projectTakes.length > 0 && <span className="text-sm font-normal text-slate-400">— saved in this browser, they survive reloads; still download the keepers</span>}</h2>
               <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 rounded-xl border border-teal px-4 py-2 text-sm font-semibold text-teal-bright hover:bg-teal/10"><Upload size={15} /> Upload a video — phone recordings too</button>
               <input ref={fileInputRef} type="file" accept="video/*,.mov,.mp4,.m4v,.webm" multiple hidden onChange={(e) => { void handleUpload(e.target.files); e.target.value = '' }} />
             </div>
             <p className="mt-1 text-xs text-slate-500">Recorded a mobile app on your phone? iPhone Screen Recording clips (Photos → .mov/.mp4) upload straight into the editor here — trim, title, export. Same for any video file from your computer.</p>
-            {takes.length === 0
-              ? <p className="mt-2 text-sm text-slate-500">No takes yet. Your finished recordings will land here with a player and a download button.</p>
+            {projectTakes.length === 0
+              ? <p className="mt-2 text-sm text-slate-500">No takes in this project yet. Recordings and uploads for {project.name} will land here with a player and a download button.</p>
               : <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  {takes.map((t) => (
+                  {projectTakes.map((t) => (
                     <div key={t.id} className="overflow-hidden rounded-2xl border border-line bg-panel">
                       <video src={t.url} controls className="aspect-video w-full bg-black" />
                       <div className="flex items-center justify-between gap-2 px-3 py-2.5">
                         <div className="min-w-0"><div className="truncate text-xs font-medium">{t.name}</div><div className="text-[11px] text-slate-500">{formatTime(t.duration)} · {formatBytes(t.size)} · {t.createdAt.toLocaleTimeString()}</div></div>
                         <div className="flex shrink-0 gap-1">
                           <button onClick={() => download(t)} title="Download" className="rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Download size={15} /></button>
-                          <button onClick={() => setTakes((p) => p.filter((x) => x.id !== t.id))} title="Delete take" className="rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>
+                          <button onClick={() => { void idbDeleteTake(t.id); setTakes((p) => p.filter((x) => x.id !== t.id)) }} title="Delete take" className="rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>
                         </div>
                       </div>
                     </div>
@@ -369,7 +478,7 @@ export default function App() {
                 </div>}
           </div>
 
-          <Editor takes={takes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
+          <Editor takes={projectTakes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
         </section>
 
         <aside className="space-y-4">
@@ -393,18 +502,31 @@ export default function App() {
           </div>
 
           <div className="rounded-2xl border border-line bg-panel p-4">
-            <h3 className="flex items-center gap-2 text-sm font-semibold"><Clapperboard size={16} className="text-teal-bright" /> Project preset</h3>
-            <p className="mt-1 text-[11px] text-slate-500">Pick the project you're demoing — loads its title card, script outline and open-first checklist.</p>
-            <select value={presetId} onChange={(e) => loadPreset(e.target.value)} className="mt-3 w-full rounded-lg border border-line bg-panel2 px-2 py-2 text-sm">
-              {PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <div className="mt-3 rounded-xl bg-panel2 p-3 text-[12px] leading-relaxed text-slate-300"><strong className="text-slate-100">Open first:</strong> {preset.openFirst}</div>
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Clapperboard size={16} className="text-teal-bright" /> Project</h3>
+            <p className="mt-1 text-[11px] text-slate-500">Pick the project you're demoing — its takes, title card and script live here, saved automatically.</p>
+            <div className="mt-3 flex items-center gap-2">
+              <select value={project.id} onChange={(e) => { setProjectId(e.target.value); setRenaming(false) }} className="min-w-0 flex-1 rounded-lg border border-line bg-panel2 px-2 py-2 text-sm">
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.builtin ? '' : ' — yours'}</option>)}
+              </select>
+              <button onClick={newProject} title="New project" className="shrink-0 rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Plus size={15} /></button>
+              <button onClick={() => setRenaming((r) => !r)} title="Rename project" className="shrink-0 rounded-lg border border-line p-2 text-slate-300 hover:bg-panel2"><Pencil size={15} /></button>
+              {!project.builtin && <button onClick={removeProject} title="Delete project" className="shrink-0 rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>}
+            </div>
+            {renaming && (
+              <div className="mt-2 flex items-center gap-2">
+                <input autoFocus value={project.name} onChange={(e) => patchProject({ name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') setRenaming(false) }} className="min-w-0 flex-1 rounded-lg border border-teal bg-panel2 px-3 py-2 text-sm outline-none" placeholder="Project name" />
+                <button onClick={() => setRenaming(false)} title="Done" className="shrink-0 rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Check size={15} /></button>
+              </div>
+            )}
+            {project.builtin
+              ? <div className="mt-3 rounded-xl bg-panel2 p-3 text-[12px] leading-relaxed text-slate-300"><strong className="text-slate-100">Open first:</strong> {project.openFirst}</div>
+              : <textarea value={project.openFirst} onChange={(e) => patchProject({ openFirst: e.target.value })} rows={2} className="mt-3 w-full resize-y rounded-xl border border-line bg-panel2 p-3 text-[12px] leading-relaxed text-slate-300 outline-none focus:border-teal" placeholder="Open first: what should be on screen before you record?" />}
           </div>
 
           <div className="rounded-2xl border border-line bg-panel p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><FileText size={16} className="text-teal-bright" /> Demo script / notes</h3>
             <textarea value={script} onChange={(e) => setScript(e.target.value)} rows={9} className="mt-3 w-full resize-y rounded-xl border border-line bg-panel2 p-3 text-sm leading-relaxed outline-none focus:border-teal" placeholder="Write your talking points here — saved automatically in this browser." />
-            <p className="mt-2 text-[11px] text-slate-500">Auto-saved locally. Read from this while the countdown runs.</p>
+            <p className="mt-2 text-[11px] text-slate-500">Auto-saved with this project. Read from this while the countdown runs.</p>
           </div>
 
           <div className="rounded-2xl border border-line bg-panel p-4 text-[12px] leading-relaxed text-slate-400">

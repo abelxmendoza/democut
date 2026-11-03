@@ -187,6 +187,7 @@ export interface Take {
   duration: number
   size: number
   createdAt: Date
+  projectId: string
 }
 
 export function formatTime(totalSeconds: number): string {

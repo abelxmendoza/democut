@@ -62,6 +62,21 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
   const setEdit = (id: string, patch: Partial<Edit>) =>
     setEdits((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
 
+  // One click: every take in the project goes into the edit, included,
+  // in the order it was recorded — then Export splices them into one video.
+  const spliceAll = () => {
+    const sorted = [...takes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    setOrder(sorted.map((t) => t.id))
+    setEdits((prev) => {
+      const next = { ...prev }
+      for (const t of sorted) {
+        next[t.id] = { include: true, start: next[t.id]?.start ?? 0, end: next[t.id]?.end || t.duration || 0 }
+      }
+      return next
+    })
+    setNote('All takes are in the edit, in recording order. Trim anything you want, then Export.')
+  }
+
   async function exportEdit() {
     if (!included.length || exporting) return
     setExporting(true)
@@ -212,8 +227,11 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
 
   return (
     <div className="mt-6 rounded-2xl border border-line bg-panel p-4">
-      <h2 className="flex items-center gap-2 font-semibold"><Scissors size={17} className="text-teal-bright" /> Edit — trim, stitch, export</h2>
-      <p className="mt-1 text-sm text-slate-400">Record as many takes as you want. Trim the flubs off each one, reorder them, add a title card, then export a single edited video. Originals are never touched.</p>
+      <h2 className="flex items-center gap-2 font-semibold"><Scissors size={17} className="text-teal-bright" /> Edit — trim, splice, export</h2>
+      <p className="mt-1 text-sm text-slate-400">Every take in this project is in the edit below. Trim the flubs off each one, reorder them, add a title card, then export a single spliced video. Originals are never touched.</p>
+      {takes.length > 1 && (
+        <button onClick={spliceAll} className="mt-3 rounded-xl border border-teal px-4 py-2 text-sm font-semibold text-teal-bright hover:bg-teal/10">Splice all {takes.length} takes together</button>
+      )}
 
       <div className="mt-4 space-y-3">
         {playlist.map((t, i) => {

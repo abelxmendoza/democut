@@ -28,9 +28,10 @@ So DemoCut is a **web app first (React + browser capture APIs), wrapped in Elect
 - **Pause / resume** mid-demo instead of restarting a take.
 - **Live mic level meter** (Web Audio analyser) so you catch a dead mic *before* the take.
 - **Facecam controls** — size (S/M/L), on/off, mirror on/off. Quality 720p/1080p, 30/60 fps.
-- **Demo script pane** — talking points next to the preview, auto-saved to localStorage.
-- **Takes library** — every finished recording lands in the page with a player, duration, size, download and delete.
-- **Built-in editor** — trim the start/end of each take with sliders, include/exclude and reorder takes, add a title card, and export one edited video (rendered locally via canvas + MediaRecorder; originals are never modified).
+- **Projects** — one project per app you're demoing. Eight built-in presets (RobotForge, PX4, Omega-1, …) are starting templates; hit **+** to create your own, rename it, and delete it when it's done. Each project keeps its own script, title card and takes — everything auto-saves in your browser (projects + edits in localStorage, take files in IndexedDB), so it's all still there after a reload or a restart.
+- **Demo script pane** — talking points next to the preview, auto-saved per project.
+- **Takes library** — every finished recording lands in its project's library with a player, duration, size, download and delete — and persists across reloads.
+- **Built-in editor** — trim the start/end of each take with sliders, include/exclude and reorder takes, add a title card, and export one edited video (rendered locally via canvas + MediaRecorder; originals are never modified). **Splice all takes** puts every take in the project into the edit in recording order, in one click.
 - **Private by default** — everything runs locally. No upload, no account, no analytics.
 
 ## Deploy the web app (Vercel)
@@ -80,13 +81,13 @@ Then: **Set up screen + camera → pick the window → Record → talk → Stop 
    permission in System Settings → Privacy & Security.
 2. Do a 10-second test take and play it back — check facecam position, mic
    level, and that you can hear yourself.
-3. Pick your project preset, open what it says to open, then record.
-4. Download keepers before closing the tab — web takes live in session memory.
+3. Pick your project (or make a new one with **+**), open what it says to open, then record.
+4. Takes now persist in the browser between sessions — still download anything important; browser storage can be evicted under disk pressure, and private windows don't keep it.
 
 ## Honest limits
 
 - Browser system-audio capture is limited to what `getDisplayMedia` exposes (best in Chrome, tab audio). Your microphone is always captured.
-- Takes live in memory for the session — download the keepers before closing the tab (desktop build saves to disk).
+- Takes persist locally in IndexedDB on this machine/browser — that is not a backup. Download the keepers (the desktop build saves to disk).
 - The exported format is WebM in most browsers (MP4 where the browser's `MediaRecorder` supports it — the app picks the best available automatically).
 
 ## Project layout
