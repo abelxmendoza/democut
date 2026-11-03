@@ -7,6 +7,7 @@ import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
   formatTime, formatBytes, type PipSize, type Quality, type Take,
 } from './lib/recorder'
+import { useHotkeys } from 'react-hotkeys-hook'
 import Editor from './components/Editor'
 import { PRESETS } from './lib/projects'
 
@@ -228,6 +229,18 @@ export default function App() {
   }
 
   const recording = phase === 'recording' || phase === 'paused'
+
+  // Web-build shortcuts (react-hotkeys-hook, MIT) — parity with the desktop
+  // app's global hotkeys: Cmd/Ctrl+Shift+R record/stop, Cmd/Ctrl+Shift+P pause.
+  useHotkeys('mod+shift+r', (e) => {
+    e.preventDefault()
+    if (phase === 'ready') beginRecording()
+    else if (phase === 'recording' || phase === 'paused') stopRecording()
+  }, { enableOnFormTags: false }, [phase])
+  useHotkeys('mod+shift+p', (e) => {
+    e.preventDefault()
+    if (phase === 'recording' || phase === 'paused') pauseResume()
+  }, { enableOnFormTags: false }, [phase])
 
   const addEditedTake = (blob: Blob, durationSec: number) => {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')

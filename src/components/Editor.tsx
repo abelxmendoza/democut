@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowUp, Clapperboard, Scissors, Sparkles } from 'lucide-react'
+import { ArrowDown, ArrowUp, Clapperboard, Scissors, Sparkles, Zap } from 'lucide-react'
 import { formatTime, pickMimeType, type Take } from '../lib/recorder'
 
 interface Edit { include: boolean; start: number; end: number }
@@ -168,6 +168,46 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
     }
   }
 
+
+  // Fast path (Mediabunny, MPL-2.0, WebCodecs): trim ONE take by copying /
+  // hardware-encoding its packets instead of re-rendering in real time.
+  // Multi-take stitching and title cards still use the render export below.
+  async function fastExport() {
+    if (included.length !== 1 || exporting) return
+    const take = included[0]
+    const edit = edits[take.id]
+    setExporting(true)
+    setNote('')
+    try {
+      // Loaded on demand so the recorder's first paint stays light
+      const { Input, Output, Conversion, BlobSource, BufferTarget, WebMOutputFormat, Mp4OutputFormat, ALL_FORMATS } = await import('mediabunny')
+      const isMp4 = take.blob.type.includes('mp4') || take.name.endsWith('.mp4')
+      const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(take.blob) })
+      const output = new Output({
+        format: isMp4 ? new Mp4OutputFormat() : new WebMOutputFormat(),
+        target: new BufferTarget(),
+      })
+      const conversion = await Conversion.init({
+        input,
+        output,
+        trim: { start: Math.max(0, edit.start || 0), end: edit.end || undefined },
+      })
+      if (!conversion.isValid) throw new Error('this file format cannot be fast-exported — use the render export instead')
+      conversion.onProgress = (p) => setProgress(`Fast export: ${Math.round(p * 100)}%`)
+      await conversion.execute()
+      const buffer = (output.target as unknown as { buffer: ArrayBuffer | null }).buffer
+      if (!buffer) throw new Error('fast export produced no data')
+      const blob = new Blob([buffer as BlobPart], { type: isMp4 ? 'video/mp4' : 'video/webm' })
+      onExported(blob, Math.max(0, (edit.end || take.duration) - (edit.start || 0)))
+      setNote('Fast export done (Mediabunny/WebCodecs) — trimmed take is in your library above.')
+    } catch (err) {
+      setNote(`Fast export hit a problem: ${err instanceof Error ? err.message : 'unknown error'}. The render export below still works.`)
+    } finally {
+      setExporting(false)
+      setProgress('')
+    }
+  }
+
   if (!takes.length) return null
 
   return (
@@ -208,8 +248,14 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
         <button onClick={exportEdit} disabled={exporting || !included.length} className="flex items-center gap-2 rounded-xl bg-teal px-5 py-3 font-semibold text-ink hover:bg-teal-bright disabled:opacity-50">
           {exporting ? <Sparkles size={17} className="animate-pulse" /> : <Clapperboard size={17} />} {exporting ? 'Rendering…' : 'Export edited video'}
         </button>
-        <span className="text-xs text-slate-400">{included.length} clip{included.length === 1 ? '' : 's'} · edited length ≈ {formatTime(editedDuration)} · renders in real time, so a 3-min demo takes ~3 min</span>
+        <span className="text-xs text-slate-400">{included.length} clip{included.length === 1 ? '' : 's'} · edited length ≈ {formatTime(editedDuration)} · render export runs in real time (needed for title cards + stitching)</span>
       </div>
+      {included.length === 1 && (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button onClick={fastExport} disabled={exporting} className="flex items-center gap-2 rounded-xl border border-teal px-5 py-3 font-semibold text-teal-bright hover:bg-teal/10 disabled:opacity-50"><Zap size={17} /> Fast trim export — seconds, not minutes</button>
+          <span className="text-xs text-slate-400">Single take, no title card. Powered by Mediabunny (WebCodecs, MPL-2.0) — the OSS survey's #1 pick, see docs/OSS-SURVEY.md</span>
+        </div>
+      )}
       {progress && <p className="mt-2 text-xs text-teal-bright">{progress}</p>}
       {note && <p className="mt-2 text-xs text-amber-200">{note}</p>}
     </div>

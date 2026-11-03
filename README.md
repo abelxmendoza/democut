@@ -73,6 +73,18 @@ electron/main.cjs      desktop shell: window, global hotkeys, save-to-disk, sour
 electron/preload.cjs   safe bridge (contextIsolation, no node in renderer)
 ```
 
+## Built on open source
+
+DemoCut borrows ideas and code only where licenses allow (survey with per-project
+license verdicts: [docs/OSS-SURVEY.md](docs/OSS-SURVEY.md)):
+
+- **Mediabunny** (MPL-2.0, WebCodecs) — fast single-take trim export, loaded on demand
+- **react-hotkeys-hook** (MIT) — web-build shortcuts (Cmd/Ctrl+Shift+R / +P)
+- Patterns borrowed, code NOT copied (GPL/AGPL): Cap & OpenScreen's separate-tracks
+  recording and auto-zoom-from-clicks, OBS/Screenity UX, LosslessCut's trim UI
+- Deliberately NOT adopted: ffmpeg.wasm as the main engine — its distributed core
+  bundles GPL x264/x265; kept as a possible on-demand fallback only (see survey)
+
 ## Roadmap
 
 - Native system-audio capture in the desktop build
