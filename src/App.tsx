@@ -8,6 +8,7 @@ import {
   formatTime, formatBytes, type PipSize, type Quality, type Take,
 } from './lib/recorder'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { Upload } from 'lucide-react'
 import Editor from './components/Editor'
 import { PRESETS } from './lib/projects'
 
@@ -255,6 +256,31 @@ export default function App() {
     }, ...prev])
   }
 
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const handleUpload = async (files: FileList | null) => {
+    if (!files?.length) return
+    for (const file of Array.from(files)) {
+      const url = URL.createObjectURL(file)
+      // Probe duration (files don't carry it in a way the library can show)
+      const duration = await new Promise<number>((resolve) => {
+        const v = document.createElement('video')
+        v.preload = 'metadata'
+        v.onloadedmetadata = () => resolve(Number.isFinite(v.duration) ? v.duration : 0)
+        v.onerror = () => resolve(0)
+        v.src = url
+      })
+      setTakes((prev) => [{
+        id: crypto.randomUUID(),
+        url,
+        blob: file,
+        name: file.name,
+        duration,
+        size: file.size,
+        createdAt: new Date(),
+      }, ...prev])
+    }
+  }
+
   return (
     <div className="min-h-screen bg-ink text-slate-100">
       <header className="border-b border-line">
@@ -319,7 +345,12 @@ export default function App() {
 
           {/* Takes */}
           <div className="mt-6">
-            <h2 className="flex items-center gap-2 font-semibold"><Clock3 size={17} className="text-teal-bright" /> Your takes {takes.length > 0 && <span className="text-sm font-normal text-slate-400">— saved in this session, download the keepers</span>}</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="flex items-center gap-2 font-semibold"><Clock3 size={17} className="text-teal-bright" /> Your takes {takes.length > 0 && <span className="text-sm font-normal text-slate-400">— saved in this session, download the keepers</span>}</h2>
+              <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 rounded-xl border border-teal px-4 py-2 text-sm font-semibold text-teal-bright hover:bg-teal/10"><Upload size={15} /> Upload a video — phone recordings too</button>
+              <input ref={fileInputRef} type="file" accept="video/*,.mov,.mp4,.m4v,.webm" multiple hidden onChange={(e) => { void handleUpload(e.target.files); e.target.value = '' }} />
+            </div>
+            <p className="mt-1 text-xs text-slate-500">Recorded a mobile app on your phone? iPhone Screen Recording clips (Photos → .mov/.mp4) upload straight into the editor here — trim, title, export. Same for any video file from your computer.</p>
             {takes.length === 0
               ? <p className="mt-2 text-sm text-slate-500">No takes yet. Your finished recordings will land here with a player and a download button.</p>
               : <div className="mt-3 grid gap-3 sm:grid-cols-2">

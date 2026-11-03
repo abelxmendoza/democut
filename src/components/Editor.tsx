@@ -181,7 +181,7 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
     try {
       // Loaded on demand so the recorder's first paint stays light
       const { Input, Output, Conversion, BlobSource, BufferTarget, WebMOutputFormat, Mp4OutputFormat, ALL_FORMATS } = await import('mediabunny')
-      const isMp4 = take.blob.type.includes('mp4') || take.name.endsWith('.mp4')
+      const isMp4 = take.blob.type.includes('mp4') || /\.(mp4|mov|m4v)$/i.test(take.name)
       const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(take.blob) })
       const output = new Output({
         format: isMp4 ? new Mp4OutputFormat() : new WebMOutputFormat(),

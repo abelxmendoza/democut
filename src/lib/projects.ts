@@ -93,4 +93,16 @@ export const PRESETS: ProjectPreset[] = [
 5. Editor beat: trim a flub, reorder, add this title card, export
 6. Close: one app, record → cut → ship`,
   },
+  {
+    id: 'mobile',
+    name: 'Mobile App Demo (phone)',
+    title: 'Mobile App Demo',
+    openFirst: 'On your iPhone: Settings → Control Center → add Screen Recording. Then open the app you are demoing.',
+    script: `1. On the phone: swipe into Control Center, LONG-PRESS the Record button, turn Microphone ON (so your narration is captured), then start recording
+2. Demo the app slowly — narrate every tap, pause a beat after each screen change
+3. Stop recording; the clip lands in Photos
+4. Open DemoCut (live site or desktop), hit "Upload a video", pick that clip
+5. In the editor: trim the Control Center head/tail, add the title card, export
+6. Honest note: facecam overlay on phone clips is the separate-tracks upgrade on the roadmap — today the phone clip carries your voice, not your face`,
+  },
 ]

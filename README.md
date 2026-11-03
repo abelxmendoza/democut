@@ -58,6 +58,31 @@ npm run dist       # installers via electron-builder (mac/win/linux)
 
 Then: **Set up screen + camera → pick the window → Record → talk → Stop & save take → Download.**
 
+## Phone videos + mobile app demos
+
+- **Upload anything:** the takes library takes video files from your computer
+  or phone — including iPhone Screen Recordings from Photos (.mov/.mp4).
+  Uploaded clips get the full editor: trim, reorder/stitch, title card, export.
+- **Demoing a mobile app:** record the app on the phone itself (iOS Control
+  Center → Screen Recording, long-press → Microphone On for narration), then
+  upload the clip to DemoCut and edit it there. The **Mobile App Demo** preset
+  loads that whole workflow as a checklist + script.
+- **Or mirror the phone to your Mac** (QuickTime / AirPlay) and screen-record
+  the mirrored window with DemoCut to get the live facecam PiP.
+- Facecam *overlay* onto an uploaded phone clip (record face separately,
+  composite in the editor) is the separate-tracks upgrade from the OSS survey —
+  on the roadmap, not in v1.
+
+## Before your first recording (2 minutes)
+
+1. Use Chrome (or the Electron build) and grant screen + camera + mic
+   permissions; on macOS, Chrome/your browser also needs **Screen Recording**
+   permission in System Settings → Privacy & Security.
+2. Do a 10-second test take and play it back — check facecam position, mic
+   level, and that you can hear yourself.
+3. Pick your project preset, open what it says to open, then record.
+4. Download keepers before closing the tab — web takes live in session memory.
+
 ## Honest limits
 
 - Browser system-audio capture is limited to what `getDisplayMedia` exposes (best in Chrome, tab audio). Your microphone is always captured.
