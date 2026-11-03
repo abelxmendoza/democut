@@ -33,6 +33,18 @@ So DemoCut is a **web app first (React + browser capture APIs), wrapped in Elect
 - **Built-in editor** — trim the start/end of each take with sliders, include/exclude and reorder takes, add a title card, and export one edited video (rendered locally via canvas + MediaRecorder; originals are never modified).
 - **Private by default** — everything runs locally. No upload, no account, no analytics.
 
+## Deploy the web app (Vercel)
+
+DemoCut's web build deploys on Vercel — the repo carries a `vercel.json`
+(framework: Vite, build: `npm run build`, output: `dist`), so it's a one-time import:
+
+1. In Vercel: **Add New → Project → import `abelxmendoza/democut`**
+2. Keep the detected defaults and deploy — no env vars needed
+3. Every later push to `main` auto-deploys
+
+Note: screen/camera recording needs a secure context — the `*.vercel.app`
+HTTPS URL qualifies (so does `localhost` for local dev).
+
 ## Run it
 
 ```bash
