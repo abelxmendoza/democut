@@ -1,8 +1,37 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, Clapperboard, Scissors, Sparkles, Zap } from 'lucide-react'
 import { formatTime, pickMimeType, type Take } from '../lib/recorder'
+import { detectSilences, cutSeconds, keptSegments, type SilenceSpan } from '../lib/silence'
 
-interface Edit { include: boolean; start: number; end: number }
+interface Edit { include: boolean; start: number; end: number; silences?: SilenceSpan[]; cutSilence?: boolean }
+
+function drawCaption(ctx: CanvasRenderingContext2D, text: string, W: number, H: number) {
+  const maxChars = 44
+  const words = text.split(/\s+/).filter(Boolean)
+  const lines: string[] = []
+  let line = ''
+  for (const w of words) {
+    if ((line + ' ' + w).trim().length > maxChars && line) { lines.push(line.trim()); line = w } else line += ' ' + w
+    if (lines.length === 2) break
+  }
+  if (line.trim() && lines.length < 2) lines.push(line.trim())
+  if (!lines.length) return
+  const fontPx = Math.round(H * 0.042)
+  ctx.font = `600 ${fontPx}px system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  const lineH = fontPx * 1.25
+  const blockH = lines.length * lineH + fontPx * 0.7
+  const widest = Math.max(...lines.map((l) => ctx.measureText(l).width))
+  const boxW = Math.min(W * 0.94, widest + fontPx * 1.2)
+  const boxX = (W - boxW) / 2
+  const boxY = H - blockH - H * 0.045
+  ctx.fillStyle = 'rgba(0,0,0,0.72)'
+  ctx.beginPath()
+  ctx.roundRect(boxX, boxY, boxW, blockH, 10)
+  ctx.fill()
+  ctx.fillStyle = '#ffffff'
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, boxY + fontPx * 0.9 + i * lineH))
+}
 
 interface Props {
   takes: Take[]
@@ -21,6 +50,8 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState('')
   const [note, setNote] = useState('')
+  const [detecting, setDetecting] = useState('')
+  const [captionsOn, setCaptionsOn] = useState(true)
 
   // keep playlist in sync as new takes are recorded
   useEffect(() => {
@@ -46,8 +77,16 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
   const included = playlist.filter((t) => edits[t.id]?.include)
   const editedDuration = included.reduce((sum, t) => {
     const e = edits[t.id]
-    return sum + Math.max(0, (e?.end ?? t.duration) - (e?.start ?? 0))
+    const start = e?.start ?? 0
+    const end = e?.end ?? t.duration
+    let d = Math.max(0, end - start)
+    if (e?.cutSilence && e.silences?.length) d -= cutSeconds(e.silences, start, end)
+    return sum + Math.max(0, d)
   }, 0) + (titleOn && title.trim() ? TITLE_SECONDS : 0)
+  const anyCaptions = included.some((t) => t.captions?.length)
+  const fastBlockedByCuts = included.length === 1
+    && !!edits[included[0].id]?.cutSilence
+    && (edits[included[0].id]?.silences?.length ?? 0) > 0
 
   const move = (id: string, dir: -1 | 1) =>
     setOrder((prev) => {
@@ -61,6 +100,32 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
 
   const setEdit = (id: string, patch: Partial<Edit>) =>
     setEdits((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+
+  const detectFor = async (take: Take) => {
+    setDetecting(take.id)
+    try {
+      const spans = await detectSilences(take.blob)
+      setEdit(take.id, { silences: spans, cutSilence: spans.length > 0 })
+    } catch {
+      setNote(`Could not read the audio in ${take.name} — pause detection needs a take with a readable audio track. Nothing was changed.`)
+    } finally {
+      setDetecting('')
+    }
+  }
+
+  const detectAll = async () => {
+    setDetecting('all')
+    let found = 0
+    for (const t of playlist) {
+      try {
+        const spans = await detectSilences(t.blob)
+        found += spans.length
+        setEdit(t.id, { silences: spans, cutSilence: spans.length > 0 })
+      } catch { /* per-take button reports the error if he runs it there */ }
+    }
+    setDetecting('')
+    setNote(found ? `Auto-edit found ${found} pause${found === 1 ? '' : 's'} across your takes — each take below shows what it saves. Untick any you want to keep whole.` : 'Auto-edit found no pauses over 0.6s in these takes.')
+  }
 
   // One click: every take in the project goes into the edit, included,
   // in the order it was recorded — then Export splices them into one video.
@@ -155,18 +220,29 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
 
         const start = Math.max(0, edit.start || 0)
         const end = Math.min(video.duration || take.duration, edit.end || video.duration || take.duration)
-        video.currentTime = start
-        await new Promise<void>((res) => { video.onseeked = () => res() })
-        await video.play()
-        await new Promise<void>((res) => {
-          const frame = () => {
-            if (video.currentTime >= end || video.ended || video.paused) { res(); return }
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-            requestAnimationFrame(frame)
-          }
-          frame()
-        })
-        video.pause()
+        const segs = edit.cutSilence && edit.silences?.length
+          ? keptSegments(start, end, edit.silences)
+          : [{ start, end }]
+        for (const seg of segs) {
+          video.currentTime = seg.start
+          await new Promise<void>((res) => { video.onseeked = () => res() })
+          await video.play()
+          await new Promise<void>((res) => {
+            const frame = () => {
+              if (video.currentTime >= seg.end || video.ended) { res(); return }
+              if (!video.paused) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+                if (captionsOn && take.captions?.length) {
+                  const cue = take.captions.find((c) => video.currentTime >= c.start && video.currentTime <= c.end)
+                  if (cue) drawCaption(ctx, cue.text, canvas.width, canvas.height)
+                }
+              }
+              requestAnimationFrame(frame)
+            }
+            frame()
+          })
+          video.pause()
+        }
       }
 
       rec.stop()
@@ -230,7 +306,10 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
       <h2 className="flex items-center gap-2 font-semibold"><Scissors size={17} className="text-teal-bright" /> Edit — trim, splice, export</h2>
       <p className="mt-1 text-sm text-slate-400">Every take in this project is in the edit below. Trim the flubs off each one, reorder them, add a title card, then export a single spliced video. Originals are never touched.</p>
       {takes.length > 1 && (
-        <button onClick={spliceAll} className="mt-3 rounded-xl border border-teal px-4 py-2 text-sm font-semibold text-teal-bright hover:bg-teal/10">Splice all {takes.length} takes together</button>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={spliceAll} className="rounded-xl border border-teal px-4 py-2 text-sm font-semibold text-teal-bright hover:bg-teal/10">Splice all {takes.length} takes together</button>
+          <button onClick={() => void detectAll()} disabled={detecting !== ''} className="rounded-xl border border-line px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-panel2 disabled:opacity-50">{detecting === 'all' ? 'Listening for pauses…' : 'Auto-edit: find pauses in all takes'}</button>
+        </div>
       )}
 
       <div className="mt-4 space-y-3">
@@ -260,6 +339,16 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
                   ))}
                 </div>
               )}
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                {e.silences === undefined ? (
+                  <button onClick={() => void detectFor(t)} disabled={detecting !== ''} className="rounded-full border border-line px-2.5 py-1 text-slate-300 hover:border-teal hover:text-teal-bright disabled:opacity-50">{detecting === t.id ? 'Listening for pauses…' : 'Auto-edit: find pauses'}</button>
+                ) : e.silences.length === 0 ? (
+                  <span className="text-slate-500">Auto-edit: no pauses over 0.6s found in this take.</span>
+                ) : (<>
+                  <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={!!e.cutSilence} onChange={(ev) => setEdit(t.id, { cutSilence: ev.target.checked })} className="h-3.5 w-3.5 accent-teal-500" /> Cut {e.silences.length} pause{e.silences.length === 1 ? '' : 's'} — saves {formatTime(cutSeconds(e.silences, e.start, e.end || t.duration))}</label>
+                  <button onClick={() => void detectFor(t)} disabled={detecting !== ''} className="text-slate-500 hover:text-slate-300 disabled:opacity-50">re-run</button>
+                </>)}
+              </div>
             </div>
           )
         })}
@@ -268,6 +357,7 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={titleOn} onChange={(e) => setTitleOn(e.target.checked)} className="h-4 w-4 accent-teal-500" /> Title card</label>
         <input value={title} onChange={(e) => setTitle(e.target.value)} className="min-w-44 flex-1 rounded-lg border border-line bg-panel2 px-3 py-2 text-sm outline-none focus:border-teal" placeholder="Video title" />
+        {anyCaptions && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={captionsOn} onChange={(e) => setCaptionsOn(e.target.checked)} className="h-4 w-4 accent-teal-500" /> Burn captions in</label>}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -276,11 +366,14 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
         </button>
         <span className="text-xs text-slate-400">{included.length} clip{included.length === 1 ? '' : 's'} · edited length ≈ {formatTime(editedDuration)} · render export runs in real time (needed for title cards + stitching)</span>
       </div>
-      {included.length === 1 && (
+      {included.length === 1 && !fastBlockedByCuts && (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button onClick={fastExport} disabled={exporting} className="flex items-center gap-2 rounded-xl border border-teal px-5 py-3 font-semibold text-teal-bright hover:bg-teal/10 disabled:opacity-50"><Zap size={17} /> Fast trim export — seconds, not minutes</button>
           <span className="text-xs text-slate-400">Single take, no title card. Powered by Mediabunny (WebCodecs, MPL-2.0) — the OSS survey's #1 pick, see docs/OSS-SURVEY.md</span>
         </div>
+      )}
+      {fastBlockedByCuts && (
+        <p className="mt-3 text-xs text-slate-400">Fast export can't do jump cuts or burned-in captions — the render export above applies both.</p>
       )}
       {progress && <p className="mt-2 text-xs text-teal-bright">{progress}</p>}
       {note && <p className="mt-2 text-xs text-amber-200">{note}</p>}

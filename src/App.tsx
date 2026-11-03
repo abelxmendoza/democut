@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
   Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
-  Plus, Pencil, Check, ListOrdered,
+  Plus, Pencil, Check, ListOrdered, Captions, Copy,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
@@ -13,6 +13,7 @@ import { Upload } from 'lucide-react'
 import Editor from './components/Editor'
 import { PRESETS, NEW_PROJECT_SCRIPT, type Project } from './lib/projects'
 import { loadTakes, saveTake, deleteTake as idbDeleteTake, deleteTakesForProject } from './lib/takeStore'
+import { transcribeTake, toSrt, toVtt, transcriptText } from './lib/captions'
 
 type Phase = 'idle' | 'ready' | 'countdown' | 'recording' | 'paused'
 
@@ -128,7 +129,33 @@ export default function App() {
       id: t.id, projectId: t.projectId, name: t.name, duration: t.duration,
       size: t.size, createdAt: t.createdAt.toISOString(), blob: t.blob,
       ...(t.markers?.length ? { markers: t.markers } : {}),
+      ...(t.captions?.length ? { captions: t.captions } : {}),
     })
+  }
+
+  // ---- Captions (on-device Whisper; one job at a time) --------------------
+  const [captionJob, setCaptionJob] = useState<{ id: string; stage: string; pct: number | null } | null>(null)
+  const [captionErr, setCaptionErr] = useState<Record<string, string>>({})
+  const generateCaptions = async (take: Take) => {
+    if (captionJob) return
+    setCaptionErr((p) => ({ ...p, [take.id]: '' }))
+    setCaptionJob({ id: take.id, stage: 'Starting…', pct: null })
+    try {
+      const cues = await transcribeTake(take.blob, (stage, pct) => setCaptionJob({ id: take.id, stage, pct }))
+      setTakes((prev) => prev.map((t) => {
+        if (t.id !== take.id) return t
+        const updated = { ...t, captions: cues }
+        persistTake(updated)
+        return updated
+      }))
+    } catch (e) {
+      setCaptionErr((p) => ({
+        ...p,
+        [take.id]: `Captions failed: ${e instanceof Error ? e.message : 'unknown error'} The take itself is untouched — check your connection for the one-time model download and try again.`,
+      }))
+    } finally {
+      setCaptionJob(null)
+    }
   }
 
   // ---- Recording guide -----------------------------------------------------
@@ -192,6 +219,7 @@ export default function App() {
           id: s.id, url: URL.createObjectURL(s.blob), blob: s.blob, name: s.name,
           duration: s.duration, size: s.size, createdAt: new Date(s.createdAt), projectId: s.projectId,
           ...(s.markers?.length ? { markers: s.markers } : {}),
+          ...(s.captions?.length ? { captions: s.captions } : {}),
         }))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       setTakes((prev) => [...hydrated.filter((h) => !prev.some((p) => p.id === h.id)), ...prev])
@@ -516,16 +544,12 @@ export default function App() {
               ? <p className="mt-2 text-sm text-slate-500">No takes in this project yet. Recordings and uploads for {project.name} will land here with a player and a download button.</p>
               : <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   {projectTakes.map((t) => (
-                    <div key={t.id} className="overflow-hidden rounded-2xl border border-line bg-panel">
-                      <video src={t.url} controls className="aspect-video w-full bg-black" />
-                      <div className="flex items-center justify-between gap-2 px-3 py-2.5">
-                        <div className="min-w-0"><div className="truncate text-xs font-medium">{t.name}</div><div className="text-[11px] text-slate-500">{formatTime(t.duration)} · {formatBytes(t.size)} · {t.createdAt.toLocaleTimeString()}</div>{t.markers && t.markers.length > 0 && <div className="truncate text-[11px] text-teal-bright/80" title={t.markers.map((m) => `${formatTime(m.t)} ${m.label}`).join(' · ')}>Chapters: {t.markers.map((m) => `${formatTime(m.t)} ${m.label}`).join(' · ')}</div>}</div>
-                        <div className="flex shrink-0 gap-1">
-                          <button onClick={() => download(t)} title="Download" className="rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Download size={15} /></button>
-                          <button onClick={() => { void idbDeleteTake(t.id); setTakes((p) => p.filter((x) => x.id !== t.id)) }} title="Delete take" className="rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>
-                        </div>
-                      </div>
-                    </div>
+                    <TakeCard key={t.id} take={t}
+                      onDownload={() => download(t)}
+                      onDelete={() => { void idbDeleteTake(t.id); setTakes((p) => p.filter((x) => x.id !== t.id)) }}
+                      captionJob={captionJob}
+                      captionError={captionErr[t.id] ?? ''}
+                      onGenerateCaptions={() => void generateCaptions(t)} />
                   ))}
                 </div>}
           </div>
@@ -631,6 +655,85 @@ export default function App() {
         </aside>
       </main>
       <footer className="border-t border-line py-4 text-center text-xs text-slate-600">DemoCut by Abel Mendoza — recordings never leave your machine; everything happens locally in your browser / desktop app.</footer>
+    </div>
+  )
+}
+
+function TakeCard({ take, onDownload, onDelete, captionJob, captionError, onGenerateCaptions }: {
+  take: Take
+  onDownload: () => void
+  onDelete: () => void
+  captionJob: { id: string; stage: string; pct: number | null } | null
+  captionError: string
+  onGenerateCaptions: () => void
+}) {
+  const [showTranscript, setShowTranscript] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const hasCaptions = !!take.captions?.length
+  const vttUrl = useMemo(
+    () => (hasCaptions ? URL.createObjectURL(new Blob([toVtt(take.captions!)], { type: 'text/vtt' })) : null),
+    [take.captions, hasCaptions],
+  )
+  useEffect(() => () => { if (vttUrl) URL.revokeObjectURL(vttUrl) }, [vttUrl])
+
+  const jobHere = captionJob?.id === take.id
+  const downloadSrt = () => {
+    if (!take.captions?.length) return
+    const url = URL.createObjectURL(new Blob([toSrt(take.captions)], { type: 'text/plain' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = take.name.replace(/\.[^.]+$/, '') + '.srt'
+    a.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000)
+  }
+  const copyTranscript = () => {
+    if (!take.captions?.length) return
+    void navigator.clipboard.writeText(transcriptText(take.captions)).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    })
+  }
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-line bg-panel">
+      <video src={take.url} controls className="aspect-video w-full bg-black">
+        {vttUrl && <track kind="captions" src={vttUrl} label="English (Whisper, on-device)" srcLang="en" default />}
+      </video>
+      <div className="flex items-center justify-between gap-2 px-3 py-2.5">
+        <div className="min-w-0">
+          <div className="truncate text-xs font-medium">{take.name}</div>
+          <div className="text-[11px] text-slate-500">{formatTime(take.duration)} · {formatBytes(take.size)} · {take.createdAt.toLocaleTimeString()}</div>
+          {take.markers && take.markers.length > 0 && <div className="truncate text-[11px] text-teal-bright/80" title={take.markers.map((m) => `${formatTime(m.t)} ${m.label}`).join(' · ')}>Chapters: {take.markers.map((m) => `${formatTime(m.t)} ${m.label}`).join(' · ')}</div>}
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <button onClick={onDownload} title="Download" className="rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Download size={15} /></button>
+          <button onClick={onDelete} title="Delete take" className="rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>
+        </div>
+      </div>
+      <div className="border-t border-line px-3 py-2.5">
+        {hasCaptions ? (
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="flex items-center gap-1 rounded-full bg-teal/15 px-2 py-1 font-semibold text-teal-bright"><Captions size={12} /> CC — Whisper, on-device</span>
+            <button onClick={downloadSrt} className="rounded-full border border-line px-2.5 py-1 text-slate-300 hover:border-teal hover:text-teal-bright">Download .srt</button>
+            <button onClick={() => setShowTranscript((s) => !s)} className="rounded-full border border-line px-2.5 py-1 text-slate-300 hover:border-teal hover:text-teal-bright">{showTranscript ? 'Hide transcript' : 'Transcript'}</button>
+            <button onClick={onGenerateCaptions} disabled={!!captionJob} className="text-slate-500 hover:text-slate-300 disabled:opacity-50">regenerate</button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <button onClick={onGenerateCaptions} disabled={!!captionJob} className="flex items-center gap-1.5 rounded-full border border-teal px-3 py-1.5 font-semibold text-teal-bright hover:bg-teal/10 disabled:opacity-50"><Captions size={13} /> {jobHere ? 'Working…' : 'Generate captions'}</button>
+            {jobHere
+              ? <span className="text-teal-bright">{captionJob.stage}{captionJob.pct !== null ? ` ${captionJob.pct}%` : ''}</span>
+              : <span className="text-slate-500">Whisper, on this device. First run downloads the model once (~78 MB).</span>}
+          </div>
+        )}
+        {captionError && <p className="mt-2 text-[11px] leading-relaxed text-amber-200">{captionError}</p>}
+        {hasCaptions && showTranscript && (
+          <div className="mt-2 rounded-xl bg-panel2 p-3">
+            <p className="text-[12px] leading-relaxed text-slate-300">{transcriptText(take.captions!)}</p>
+            <button onClick={copyTranscript} className="mt-2 flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[11px] text-slate-300 hover:border-teal hover:text-teal-bright">{copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy transcript</>}</button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

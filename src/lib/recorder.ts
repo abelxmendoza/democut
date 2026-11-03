@@ -185,6 +185,13 @@ export interface TakeMarker {
   label: string
 }
 
+export interface CaptionCue {
+  /** seconds into the take */
+  start: number
+  end: number
+  text: string
+}
+
 export interface Take {
   id: string
   url: string
@@ -195,6 +202,7 @@ export interface Take {
   createdAt: Date
   projectId: string
   markers?: TakeMarker[]
+  captions?: CaptionCue[]
 }
 
 export function formatTime(totalSeconds: number): string {
