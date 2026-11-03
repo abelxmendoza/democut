@@ -6,7 +6,7 @@
 //    forwarded to the renderer as keyboard events / custom events
 //  - desktopCapturer source listing for a future native source picker
 // Web-only features stay in the renderer; nothing here re-implements recording.
-const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, dialog } = require('electron')
+const { app, BrowserWindow, globalShortcut, ipcMain, desktopCapturer, dialog, session, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
@@ -36,6 +36,23 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Screen capture: Electron never shows its own picker — without a display
+  // media request handler, the renderer's getDisplayMedia() call (recorder.ts)
+  // rejects with "NotSupportedError: Not supported" and recording can't start.
+  // DemoCut is designed around capturing the ENTIRE MONITOR (follow-me), so
+  // grant the primary display's screen source. System/loopback audio isn't
+  // offered here (unavailable on Linux); the mic comes via getUserMedia.
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen'] })
+      const primaryId = String(screen.getPrimaryDisplay().id)
+      const pick = sources.find((s) => s.display_id === primaryId) || sources[0]
+      callback(pick ? { video: pick } : {})
+    } catch {
+      callback({})
+    }
+  })
+
   const win = createWindow()
 
   const send = (channel) => {
@@ -45,7 +62,7 @@ app.whenReady().then(() => {
   globalShortcut.register('CommandOrControl+Shift+P', () => send('democut:toggle-pause'))
 
   // Native screen/window source list (for a future in-app picker;
-  // today getDisplayMedia in the renderer already shows the OS picker)
+  // today the display-media handler above grants the entire monitor)
   ipcMain.handle('democut:list-sources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['window', 'screen'], thumbnailSize: { width: 320, height: 180 } })
     return sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL() }))
