@@ -33,6 +33,8 @@ So DemoCut is a **web app first (React + browser capture APIs), wrapped in Elect
 - **Recording guide (script beats OR free talk)** — while you record, the script card becomes a guide: it shows your current script beat and what's next, plus a pace bar against a per-project target length (default 3:00). Beats advance only when *you* tap Next / press → — nothing auto-advances or nags. Prefer winging it? **Free talk** mode hides the script entirely and just keeps time. Either way, each new beat and each tap of **Mark chapter** (or the M key) drops a chapter marker into the take; chapters show in the library and, in the editor, clicking one starts that clip's trim right there.
 - **Takes library** — every finished recording lands in its project's library with a player, duration, size, download and delete — and persists across reloads.
 - **Built-in editor** — trim the start/end of each take with sliders, include/exclude and reorder takes, add a title card, and export one edited video (rendered locally via canvas + MediaRecorder; originals are never modified). **Splice all takes** puts every take in the project into the edit in recording order, in one click.
+- **Auto-edit (pause cutting)** — pure Web Audio math, no AI: per take (or all takes at once), DemoCut finds pauses/dead air of 0.6s+ and shows exactly how much time cutting them saves; tick **Cut pauses** and the render export plays the kept segments back-to-back — jump cuts. It's a toggle per take, never forced, and the fast export politely refuses when jump cuts are on (it can't do them).
+- **On-device captions** — **Generate captions** on any take runs Whisper (Transformers.js, Apache-2.0) entirely in your browser: captions play in the library player, download as **.srt**, view/copy as a **transcript**, and optionally **burn into the editor export**. First use downloads the Whisper model once (~78 MB from Hugging Face) plus the speech runtime from this site (~27 MB); after that it's cached and works offline. Nothing is uploaded — transcription happens on your machine.
 - **Private by default** — everything runs locally. No upload, no account, no analytics.
 
 ## Deploy the web app (Vercel)
@@ -89,6 +91,8 @@ Then: **Set up screen + camera → pick the window → Record → talk → Stop 
 
 - Browser system-audio capture is limited to what `getDisplayMedia` exposes (best in Chrome, tab audio). Your microphone is always captured.
 - Takes persist locally in IndexedDB on this machine/browser — that is not a backup. Download the keepers (the desktop build saves to disk).
+- Captions are machine-generated on-device (Whisper tiny.en): solid for clear speech, not proofread — product names and jargon can come out wrong. Check the transcript before you rely on it.
+- Auto-edit cuts what *sounds* like silence (under ≈ −38 dB, 0.6s or longer, with a little breathing room kept at each edge). Very quiet speech can get flagged — the per-take toggle shows the saving before anything is cut, and originals are never modified.
 - The exported format is WebM in most browsers (MP4 where the browser's `MediaRecorder` supports it — the app picks the best available automatically).
 
 ## Project layout
