@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
   Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
-  Plus, Pencil, Check,
+  Plus, Pencil, Check, ListOrdered,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
-  formatTime, formatBytes, type PipSize, type Quality, type Take,
+  formatTime, formatBytes, type PipSize, type Quality, type Take, type TakeMarker,
 } from './lib/recorder'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
@@ -76,6 +76,7 @@ export default function App() {
         if (p.title !== base.title) o.title = p.title
         if (p.name !== base.name) o.name = p.name
         if (p.openFirst !== base.openFirst) o.openFirst = p.openFirst
+        if (p.targetSec && p.targetSec !== 180) o.targetSec = p.targetSec
         if (Object.keys(o).length) overrides[p.id] = o
       }
       localStorage.setItem('democut-project-overrides', JSON.stringify(overrides))
@@ -126,8 +127,47 @@ export default function App() {
     void saveTake({
       id: t.id, projectId: t.projectId, name: t.name, duration: t.duration,
       size: t.size, createdAt: t.createdAt.toISOString(), blob: t.blob,
+      ...(t.markers?.length ? { markers: t.markers } : {}),
     })
   }
+
+  // ---- Recording guide -----------------------------------------------------
+  // The script's lines are beats you CAN follow — or ignore. Guide mode
+  // shows the current beat while recording; Free talk hides the beats and
+  // just keeps time. Either way, advancing a beat or tapping Mark drops a
+  // chapter marker into the take. Nothing ever advances or nags on its own:
+  // going off script is a normal way to use this, not an error state.
+  const beats = useMemo(
+    () => script.split('\n').map((l) => l.trim()).filter(Boolean),
+    [script],
+  )
+  const [guideMode, setGuideMode] = useState<'guide' | 'free'>('guide')
+  const [beatIdx, setBeatIdxState] = useState(0)
+  const beatIdxRef = useRef(0)
+  const setBeatIdx = (n: number) => { beatIdxRef.current = n; setBeatIdxState(n) }
+  const markersRef = useRef<TakeMarker[]>([])
+  const beatsRef = useRef<string[]>([])
+  const targetSec = project?.targetSec ?? 180
+
+  // position inside the take itself (paused time excluded, incl. a pause in progress)
+  const takeTimeNow = () => {
+    const curPause = recorderRef.current?.state === 'paused' ? Date.now() - pauseStartRef.current : 0
+    return Math.max(0, (Date.now() - startRef.current - pausedTotalRef.current - curPause) / 1000)
+  }
+  const dropMarker = (label: string) => {
+    markersRef.current = [...markersRef.current, { t: takeTimeNow(), label }]
+  }
+  const nextBeat = () => {
+    const bs = beatsRef.current
+    const n = Math.min(beatIdxRef.current + 1, Math.max(0, bs.length - 1))
+    if (n !== beatIdxRef.current) {
+      setBeatIdx(n)
+      // chapters only exist once the take is rolling; before that, Next just positions the guide
+      if (bs[n] && (phase === 'recording' || phase === 'paused')) dropMarker(bs[n])
+    }
+  }
+  const prevBeat = () => setBeatIdx(Math.max(0, beatIdxRef.current - 1))
+  const markNow = () => dropMarker('Mark')
 
   const previewRef = useRef<HTMLDivElement>(null)
   const compositorRef = useRef<Compositor | null>(null)
@@ -151,6 +191,7 @@ export default function App() {
         .map((s) => ({
           id: s.id, url: URL.createObjectURL(s.blob), blob: s.blob, name: s.name,
           duration: s.duration, size: s.size, createdAt: new Date(s.createdAt), projectId: s.projectId,
+          ...(s.markers?.length ? { markers: s.markers } : {}),
         }))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       setTakes((prev) => [...hydrated.filter((h) => !prev.some((p) => p.id === h.id)), ...prev])
@@ -244,6 +285,9 @@ export default function App() {
     const comp = compositorRef.current
     if (!comp) return
     recordingProjectRef.current = project.id
+    beatsRef.current = beats
+    setBeatIdx(0)
+    markersRef.current = guideMode === 'guide' && beats.length ? [{ t: 0, label: beats[0] }] : []
     // keep compositor options in sync with toggles changed after setup
     comp.opts.pipSize = pipSize
     comp.opts.cameraOn = cameraOn
@@ -279,6 +323,7 @@ export default function App() {
         size: blob.size,
         createdAt: new Date(),
         projectId: recordingProjectRef.current,
+        ...(markersRef.current.length ? { markers: [...markersRef.current] } : {}),
       }
       persistTake(take)
       setTakes((prev) => [take, ...prev])
@@ -333,6 +378,8 @@ export default function App() {
   }
 
   const recording = phase === 'recording' || phase === 'paused'
+  const pacePct = targetSec > 0 ? Math.min(100, (elapsed / targetSec) * 100) : 0
+  const overTarget = targetSec > 0 && elapsed > targetSec
 
   // Web-build shortcuts (react-hotkeys-hook, MIT) — parity with the desktop
   // app's global hotkeys: Cmd/Ctrl+Shift+R record/stop, Cmd/Ctrl+Shift+P pause.
@@ -345,6 +392,11 @@ export default function App() {
     e.preventDefault()
     if (phase === 'recording' || phase === 'paused') pauseResume()
   }, { enableOnFormTags: false }, [phase])
+  // Guide keys while recording: → next beat, ← previous beat, M drops a mark.
+  // They only steer the guide — the recording itself never depends on them.
+  useHotkeys('right', (e) => { e.preventDefault(); if (recording) nextBeat() }, { enableOnFormTags: false }, [phase])
+  useHotkeys('left', (e) => { e.preventDefault(); if (recording) prevBeat() }, { enableOnFormTags: false }, [phase])
+  useHotkeys('m', () => { if (recording) markNow() }, { enableOnFormTags: false }, [phase])
 
   const addEditedTake = (blob: Blob, durationSec: number) => {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
@@ -467,7 +519,7 @@ export default function App() {
                     <div key={t.id} className="overflow-hidden rounded-2xl border border-line bg-panel">
                       <video src={t.url} controls className="aspect-video w-full bg-black" />
                       <div className="flex items-center justify-between gap-2 px-3 py-2.5">
-                        <div className="min-w-0"><div className="truncate text-xs font-medium">{t.name}</div><div className="text-[11px] text-slate-500">{formatTime(t.duration)} · {formatBytes(t.size)} · {t.createdAt.toLocaleTimeString()}</div></div>
+                        <div className="min-w-0"><div className="truncate text-xs font-medium">{t.name}</div><div className="text-[11px] text-slate-500">{formatTime(t.duration)} · {formatBytes(t.size)} · {t.createdAt.toLocaleTimeString()}</div>{t.markers && t.markers.length > 0 && <div className="truncate text-[11px] text-teal-bright/80" title={t.markers.map((m) => `${formatTime(m.t)} ${m.label}`).join(' · ')}>Chapters: {t.markers.map((m) => `${formatTime(m.t)} ${m.label}`).join(' · ')}</div>}</div>
                         <div className="flex shrink-0 gap-1">
                           <button onClick={() => download(t)} title="Download" className="rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Download size={15} /></button>
                           <button onClick={() => { void idbDeleteTake(t.id); setTakes((p) => p.filter((x) => x.id !== t.id)) }} title="Delete take" className="rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>
@@ -524,9 +576,47 @@ export default function App() {
           </div>
 
           <div className="rounded-2xl border border-line bg-panel p-4">
-            <h3 className="flex items-center gap-2 text-sm font-semibold"><FileText size={16} className="text-teal-bright" /> Demo script / notes</h3>
-            <textarea value={script} onChange={(e) => setScript(e.target.value)} rows={9} className="mt-3 w-full resize-y rounded-xl border border-line bg-panel2 p-3 text-sm leading-relaxed outline-none focus:border-teal" placeholder="Write your talking points here — saved automatically in this browser." />
-            <p className="mt-2 text-[11px] text-slate-500">Auto-saved with this project. Read from this while the countdown runs.</p>
+            {phase === 'idle' ? (<>
+              <h3 className="flex items-center gap-2 text-sm font-semibold"><FileText size={16} className="text-teal-bright" /> Demo script / notes</h3>
+              <textarea value={script} onChange={(e) => setScript(e.target.value)} rows={9} className="mt-3 w-full resize-y rounded-xl border border-line bg-panel2 p-3 text-sm leading-relaxed outline-none focus:border-teal" placeholder="One talking point per line — each line becomes a beat in the recording guide." />
+              <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                <span>Auto-saved with this project.</span>
+                <label className="flex items-center gap-2">Target length
+                  <select value={targetSec} onChange={(e) => patchProject({ targetSec: Number(e.target.value) })} className="rounded-lg border border-line bg-panel2 px-2 py-1 text-xs text-slate-200">
+                    <option value={0}>No target</option><option value={120}>2:00</option><option value={150}>2:30</option><option value={180}>3:00</option><option value={240}>4:00</option><option value={300}>5:00</option>
+                  </select>
+                </label>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">While you record, this card becomes your guide: follow the beats, or switch to Free talk and just talk — tap Mark to drop a chapter wherever one starts. Going off script is fine; the guide follows you, not the other way around.</p>
+            </>) : (<>
+              <h3 className="flex items-center gap-2 text-sm font-semibold"><ListOrdered size={16} className="text-teal-bright" /> Recording guide</h3>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button onClick={() => setGuideMode('guide')} className={`rounded-lg px-3 py-2 text-xs ${guideMode === 'guide' ? 'bg-teal font-semibold text-ink' : 'border border-line text-slate-300 hover:bg-panel2'}`}>Script beats</button>
+                <button onClick={() => setGuideMode('free')} className={`rounded-lg px-3 py-2 text-xs ${guideMode === 'free' ? 'bg-teal font-semibold text-ink' : 'border border-line text-slate-300 hover:bg-panel2'}`}>Free talk</button>
+              </div>
+              {guideMode === 'guide' ? (
+                <div className="mt-3 rounded-xl bg-panel2 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Beat {beats.length ? Math.min(beatIdx + 1, beats.length) : 0} of {beats.length}</div>
+                  <div className="mt-1 text-[15px] font-medium leading-snug text-slate-100">{beats[beatIdx] ?? 'No script lines for this project — Free talk it, or stop and add a script.'}</div>
+                  {beats[beatIdx + 1] && <div className="mt-2 text-xs leading-relaxed text-slate-400">Next: {beats[beatIdx + 1]}</div>}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-xl bg-panel2 p-3 text-sm leading-relaxed text-slate-300">Free talk — no script. Talk naturally. Tap <strong className="text-slate-100">Mark</strong> wherever a new chapter starts; the editor will show them on the take.</div>
+              )}
+              {targetSec > 0 && (
+                <div className="mt-3">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400"><span className="font-mono">{formatTime(elapsed)}</span><span>target {formatTime(targetSec)}</span></div>
+                  <div className="mt-1 h-2 overflow-hidden rounded-full bg-panel2"><div className={`h-full transition-all ${overTarget ? 'bg-amber-400' : 'bg-teal'}`} style={{ width: `${pacePct}%` }} /></div>
+                  <div className="mt-1 text-[11px] text-slate-500">{overTarget ? `${formatTime(elapsed - targetSec)} past target — wrap up when it feels natural.` : `${formatTime(Math.max(0, targetSec - elapsed))} of target left — a guide, not a deadline.`}</div>
+                </div>
+              )}
+              <div className="mt-3 flex items-center gap-2">
+                <button onClick={prevBeat} disabled={guideMode !== 'guide'} className="rounded-lg border border-line px-3 py-2 text-xs text-slate-300 hover:bg-panel2 disabled:opacity-40">← Prev</button>
+                <button onClick={markNow} disabled={!recording} className="flex-1 rounded-lg bg-teal px-3 py-2 text-xs font-semibold text-ink hover:bg-teal-bright disabled:opacity-40">● Mark chapter</button>
+                <button onClick={nextBeat} disabled={guideMode !== 'guide'} className="rounded-lg border border-line px-3 py-2 text-xs text-slate-300 hover:bg-panel2 disabled:opacity-40">Next →</button>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">Beats never advance on their own — only when you tap Next or press →. A chapter lands in the take at each new beat and each Mark. Keys: → next · ← back · M mark.</p>
+            </>)}
           </div>
 
           <div className="rounded-2xl border border-line bg-panel p-4 text-[12px] leading-relaxed text-slate-400">

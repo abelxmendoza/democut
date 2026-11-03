@@ -179,6 +179,12 @@ export function pickMimeType(): string {
   return candidates.find((c) => window.MediaRecorder?.isTypeSupported(c)) ?? ''
 }
 
+export interface TakeMarker {
+  /** seconds into the take */
+  t: number
+  label: string
+}
+
 export interface Take {
   id: string
   url: string
@@ -188,6 +194,7 @@ export interface Take {
   size: number
   createdAt: Date
   projectId: string
+  markers?: TakeMarker[]
 }
 
 export function formatTime(totalSeconds: number): string {

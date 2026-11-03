@@ -16,6 +16,8 @@ export interface ProjectPreset {
 // script/title edits persist in localStorage (see App).
 export interface Project extends ProjectPreset {
   builtin: boolean
+  /** Target demo length in seconds for the pace guide (default 180). */
+  targetSec?: number
 }
 
 export const NEW_PROJECT_SCRIPT = `1. What it is — one sentence, who it's for

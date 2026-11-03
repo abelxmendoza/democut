@@ -13,6 +13,7 @@ export interface StoredTake {
   size: number
   createdAt: string // ISO
   blob: Blob
+  markers?: { t: number; label: string }[]
 }
 
 const DB_NAME = 'democut'

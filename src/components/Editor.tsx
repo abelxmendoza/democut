@@ -252,6 +252,14 @@ export default function Editor({ takes, onExported, title, onTitleChange }: Prop
                   <input type="range" min={0} max={max} step={0.1} value={Math.min(e.end || max, max)} onChange={(ev) => setEdit(t.id, { end: Math.max(Number(ev.target.value), e.start) })} className="w-full accent-teal-500" /></label>
               </div>
               <div className="text-[11px] text-slate-500">Kept: {formatTime(Math.max(0, e.end - e.start))} of {formatTime(t.duration)}</div>
+              {t.markers && t.markers.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1">
+                  <span className="text-[10px] text-slate-500">Chapters — click to start the trim there:</span>
+                  {t.markers.map((m, mi) => (
+                    <button key={mi} onClick={() => setEdit(t.id, { start: Math.min(m.t, Math.max(0, (e.end || t.duration) - 0.1)) })} className="rounded-full border border-line px-2 py-0.5 text-[10px] text-slate-300 hover:border-teal hover:text-teal-bright">{formatTime(m.t)} {m.label.length > 26 ? `${m.label.slice(0, 26)}…` : m.label}</button>
+                  ))}
+                </div>
+              )}
             </div>
           )
         })}
