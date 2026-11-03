@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
-  Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2,
+  Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, pickMimeType,
   formatTime, formatBytes, type PipSize, type Quality, type Take,
 } from './lib/recorder'
 import Editor from './components/Editor'
+import { PRESETS } from './lib/projects'
 
 type Phase = 'idle' | 'ready' | 'countdown' | 'recording' | 'paused'
 
@@ -31,6 +32,15 @@ export default function App() {
   const [micLevel, setMicLevel] = useState(0)
 
   const [script, setScript] = useState(() => localStorage.getItem('democut-script') || DEFAULT_SCRIPT)
+  const [presetId, setPresetId] = useState('generic')
+  const [videoTitle, setVideoTitle] = useState('My Demo')
+  const preset = PRESETS.find((p) => p.id === presetId) ?? PRESETS[0]
+  const loadPreset = (id: string) => {
+    const p = PRESETS.find((x) => x.id === id) ?? PRESETS[0]
+    setPresetId(id)
+    setScript(p.script)
+    setVideoTitle(p.title)
+  }
   const [takes, setTakes] = useState<Take[]>([])
 
   const previewRef = useRef<HTMLDivElement>(null)
@@ -315,7 +325,7 @@ export default function App() {
                 </div>}
           </div>
 
-          <Editor takes={takes} onExported={addEditedTake} />
+          <Editor takes={takes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
         </section>
 
         <aside className="space-y-4">
@@ -336,6 +346,15 @@ export default function App() {
             <div className="mt-4 rounded-xl bg-panel2 p-3 text-[11px] leading-relaxed text-slate-400">
               <strong className="text-slate-200">Honest limits:</strong> in the browser, system audio only comes with tab/Chrome screen share where supported; your mic is always recorded. The Electron desktop build is the path to true system-wide capture, global hotkeys and auto-save to a folder.
             </div>
+          </div>
+
+          <div className="rounded-2xl border border-line bg-panel p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Clapperboard size={16} className="text-teal-bright" /> Project preset</h3>
+            <p className="mt-1 text-[11px] text-slate-500">Pick the project you're demoing — loads its title card, script outline and open-first checklist.</p>
+            <select value={presetId} onChange={(e) => loadPreset(e.target.value)} className="mt-3 w-full rounded-lg border border-line bg-panel2 px-2 py-2 text-sm">
+              {PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <div className="mt-3 rounded-xl bg-panel2 p-3 text-[12px] leading-relaxed text-slate-300"><strong className="text-slate-100">Open first:</strong> {preset.openFirst}</div>
           </div>
 
           <div className="rounded-2xl border border-line bg-panel p-4">

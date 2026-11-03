@@ -7,15 +7,17 @@ interface Edit { include: boolean; start: number; end: number }
 interface Props {
   takes: Take[]
   onExported: (blob: Blob, durationSec: number) => void
+  title: string
+  onTitleChange: (v: string) => void
 }
 
 const TITLE_SECONDS = 2.5
 
-export default function Editor({ takes, onExported }: Props) {
+export default function Editor({ takes, onExported, title, onTitleChange }: Props) {
   const [order, setOrder] = useState<string[]>([])
   const [edits, setEdits] = useState<Record<string, Edit>>({})
   const [titleOn, setTitleOn] = useState(true)
-  const [title, setTitle] = useState('My Demo')
+  const setTitle = onTitleChange
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState('')
   const [note, setNote] = useState('')
