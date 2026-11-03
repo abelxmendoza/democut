@@ -14,6 +14,8 @@ export interface RecordOptions {
   cameraOn: boolean
   micOn: boolean
   mirrorCamera: boolean
+  /** Name shown in a teal tag above the facecam (blank = no tag). */
+  nameTag?: string
 }
 
 const PIP_SCALE: Record<PipSize, number> = { s: 0.16, m: 0.22, l: 0.3 }
@@ -94,8 +96,34 @@ export class Compositor {
         const pipH = Math.round((pipW * 3) / 4) // 4:3 camera box
         const margin = Math.round(W * 0.018)
         const x = W - pipW - margin
-        const y = margin
         const radius = Math.round(pipW * 0.06)
+
+        // Name tag: a teal box with the name in black, directly above the
+        // facecam, same width as the facecam box. The PiP shifts down to
+        // make room; with no name set, nothing changes.
+        const name = (this.opts.nameTag ?? '').trim()
+        let y = margin
+        if (name) {
+          let fontPx = Math.round(pipW * 0.088)
+          ctx.font = `800 ${fontPx}px system-ui, -apple-system, 'Segoe UI', sans-serif`
+          const textW = ctx.measureText(name).width
+          const maxTextW = pipW - Math.round(pipW * 0.1)
+          if (textW > maxTextW) {
+            fontPx = Math.max(10, Math.floor(fontPx * (maxTextW / textW)))
+            ctx.font = `800 ${fontPx}px system-ui, -apple-system, 'Segoe UI', sans-serif`
+          }
+          const tagH = Math.round(fontPx * 1.75)
+          const gap = Math.round(W * 0.006)
+          roundRect(ctx, x, margin, pipW, tagH, Math.round(tagH * 0.28))
+          ctx.fillStyle = '#14b8a6'
+          ctx.fill()
+          ctx.fillStyle = '#000000'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(name, x + pipW / 2, margin + tagH / 2 + 1)
+          ctx.textBaseline = 'alphabetic'
+          y = margin + tagH + gap
+        }
 
         ctx.save()
         ctx.shadowColor = 'rgba(0,0,0,0.45)'

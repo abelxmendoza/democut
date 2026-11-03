@@ -34,6 +34,7 @@ export default function App() {
   const [cameraOn, setCameraOn] = useState(true)
   const [micOn, setMicOn] = useState(true)
   const [mirror, setMirror] = useState(true)
+  const [nameTag, setNameTag] = useState(() => localStorage.getItem('democut-name-tag') ?? 'Abel Mendoza')
   const [micLevel, setMicLevel] = useState(0)
 
   // ---- Projects ----------------------------------------------------------
@@ -275,7 +276,7 @@ export default function App() {
         }
       }
 
-      const comp = new Compositor({ quality, fps, pipSize, cameraOn, micOn, mirrorCamera: mirror })
+      const comp = new Compositor({ quality, fps, pipSize, cameraOn, micOn, mirrorCamera: mirror, nameTag })
       comp.attach(screen, cam)
       comp.start()
       compositorRef.current = comp
@@ -320,6 +321,7 @@ export default function App() {
     comp.opts.pipSize = pipSize
     comp.opts.cameraOn = cameraOn
     comp.opts.mirrorCamera = mirror
+    comp.opts.nameTag = nameTag
 
     const canvasStream = comp.stream()
     const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()]
@@ -571,6 +573,9 @@ export default function App() {
               <Toggle label="Camera" icon={cameraOn ? <Video size={15} /> : <VideoOff size={15} />} on={cameraOn} set={setCameraOn} />
               <Toggle label="Microphone" icon={micOn ? <Mic size={15} /> : <MicOff size={15} />} on={micOn} set={setMicOn} />
               <Toggle label="Mirror my camera" icon={<Camera size={15} />} on={mirror} set={setMirror} />
+              <label className="block">Name tag above facecam
+                <input value={nameTag} onChange={(e) => { setNameTag(e.target.value); localStorage.setItem('democut-name-tag', e.target.value) }} placeholder="Your name — blank for none" className="mt-1.5 w-full rounded-lg border border-line bg-panel2 px-2.5 py-1.5 text-xs outline-none focus:border-teal" />
+              </label>
             </div>
             <div className="mt-4 rounded-xl bg-panel2 p-3 text-[11px] leading-relaxed text-slate-400">
               <strong className="text-slate-200">Honest limits:</strong> in the browser, system audio only comes with tab/Chrome screen share where supported; your mic is always recorded. The Electron desktop build is the path to true system-wide capture, global hotkeys and auto-save to a folder.
