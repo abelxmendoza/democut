@@ -655,6 +655,25 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  /** Director: add a generated blob (intro/credits card, assembled draft)
+   *  as a named take in this project; returns the new take's id so the
+   *  caller can slot it into Finish immediately. */
+  const addGeneratedTake = (blob: Blob, name: string, durationSec: number): string => {
+    const take: Take = {
+      id: crypto.randomUUID(),
+      url: URL.createObjectURL(blob),
+      blob,
+      name,
+      duration: durationSec,
+      size: blob.size,
+      createdAt: new Date(),
+      projectId: project.id,
+    }
+    persistTake(take)
+    setTakes((prev) => [take, ...prev])
+    return take.id
+  }
+
   /** Finish stage: import one finished cut (e.g. a CapCut export) as a
    *  take in this project and hand back its id so Finish can slot it as
    *  the body immediately. */
@@ -837,7 +856,7 @@ export default function App() {
 
           <Editor takes={projectTakes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
 
-          <Finish projectId={project.id} projectName={project.name} takes={projectTakes} onImportBody={importBodyTake} onExported={addEditedTake} />
+          <Finish projectId={project.id} projectName={project.name} project={project} script={script} takes={projectTakes} onImportBody={importBodyTake} onExported={addEditedTake} onAddTake={addGeneratedTake} />
 
           <div id="take-rescue" className="scroll-mt-4">
             <Rescue project={project} takes={projectTakes} focusTakeId={rescueFocusId} onImportVideo={importBodyTake} onExported={addRescuedTake} onRecordScreenOnly={recordScreenOnly} />

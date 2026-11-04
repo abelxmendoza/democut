@@ -9,14 +9,20 @@ import {
 } from '../lib/finish'
 import { renderTimeline, RenderCancelled, type TimelinePiece } from '../lib/renderTimeline'
 import { checkConcat, fastConcat, type ConcatCheck, type ConcatPiece } from '../lib/fastConcat'
+import type { Project } from '../lib/projects'
+import Director from './Director'
 
 interface Props {
   projectId: string
   projectName: string
+  project: Project
+  script: string
   takes: Take[]
   /** Imports one file as a take in this project; resolves to the new take id. */
   onImportBody: (file: File) => Promise<string | null>
   onExported: (blob: Blob, durationSec: number) => void
+  /** Adds a generated blob (card / Director draft) as a named take; returns its id. */
+  onAddTake: (blob: Blob, name: string, durationSec: number) => string
 }
 
 const SUBMISSION_LIMIT_SEC = 180
@@ -25,7 +31,7 @@ function fmtDb(v: number): string {
   return `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`
 }
 
-export default function Finish({ projectId, projectName, takes, onImportBody, onExported }: Props) {
+export default function Finish({ projectId, projectName, project, script, takes, onImportBody, onExported, onAddTake }: Props) {
   const [settings, setSettings] = useState<FinishSettings>(() => loadFinishSettings(projectId))
   const [voice, setVoice] = useState<VoiceLevel | null>(null)
   const [voiceState, setVoiceState] = useState<'idle' | 'working' | 'none'>('idle')
@@ -248,6 +254,19 @@ export default function Finish({ projectId, projectName, takes, onImportBody, on
         </select>
         {kit && <span className="text-[11px] text-slate-500">The RobotForge kit is the trailer's own title + end cards, bundled with DemoCut.</span>}
       </div>
+
+      {/* Director: generated cards, transcript auto-assembly, narration */}
+      <Director
+        project={project}
+        script={script}
+        takes={takes}
+        quality={settings.quality}
+        onAddTake={onAddTake}
+        onSlotCard={(slot, takeId) => update(slot === 'intro'
+          ? { introSource: 'take', introTakeId: takeId }
+          : { outroSource: 'take', outroTakeId: takeId })}
+        onSetBody={(takeId) => update({ bodyTakeId: takeId })}
+      />
 
       {/* Slots */}
       <div className="mt-3 grid gap-3 md:grid-cols-3">
