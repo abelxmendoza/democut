@@ -11,6 +11,7 @@ import {
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
 import Editor from './components/Editor'
+import Finish from './components/Finish'
 import Review from './components/Review'
 import { PRESETS, NEW_PROJECT_SCRIPT, type Project } from './lib/projects'
 import { loadTakes, saveTake, deleteTake as idbDeleteTake, deleteTakesForProject } from './lib/takeStore'
@@ -626,6 +627,33 @@ export default function App() {
     setTakes((prev) => [take, ...prev])
   }
 
+  /** Finish stage: import one finished cut (e.g. a CapCut export) as a
+   *  take in this project and hand back its id so Finish can slot it as
+   *  the body immediately. */
+  const importBodyTake = async (file: File): Promise<string | null> => {
+    const url = URL.createObjectURL(file)
+    const duration = await new Promise<number>((resolve) => {
+      const v = document.createElement('video')
+      v.preload = 'metadata'
+      v.onloadedmetadata = () => resolve(Number.isFinite(v.duration) ? v.duration : 0)
+      v.onerror = () => resolve(0)
+      v.src = url
+    })
+    const take: Take = {
+      id: crypto.randomUUID(),
+      url,
+      blob: file,
+      name: file.name,
+      duration,
+      size: file.size,
+      createdAt: new Date(),
+      projectId: project.id,
+    }
+    persistTake(take)
+    setTakes((prev) => [take, ...prev])
+    return take.id
+  }
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const handleUpload = async (files: FileList | null) => {
     if (!files?.length) return
@@ -776,6 +804,8 @@ export default function App() {
           />
 
           <Editor takes={projectTakes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
+
+          <Finish projectId={project.id} projectName={project.name} takes={projectTakes} onImportBody={importBodyTake} onExported={addEditedTake} />
         </section>
 
         <aside className="space-y-4">
