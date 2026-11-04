@@ -508,6 +508,10 @@ export default function App() {
     })
     chunksRef.current = []
     rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data) }
+    rec.onerror = () => {
+      // Never fail silently: onstop still saves whatever was captured.
+      setError('The recorder reported an error mid-take — whatever was captured up to that point will still be saved when the take finishes. If it happens again, try 720p / 30 fps.')
+    }
     rec.onstop = async () => {
       const type = mimeType || 'video/webm'
       const ext = type.includes('mp4') ? 'mp4' : 'webm'

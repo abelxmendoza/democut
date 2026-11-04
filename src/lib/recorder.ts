@@ -94,6 +94,8 @@ export class Compositor {
   private ctx: CanvasRenderingContext2D
   private raf = 0
   private clockStop: (() => void) | null = null
+  private backupIv: ReturnType<typeof setInterval> | null = null
+  private lastDrawAt = 0
   private screenVideo: HTMLVideoElement | null = null
   private camVideo: HTMLVideoElement | null = null
   opts: RecordOptions
@@ -145,6 +147,13 @@ export class Compositor {
   }
 
   private drawFrame() {
+      this.lastDrawAt = performance.now()
+      // A source <video> that isn't in the DOM can get paused by the browser
+      // while the window is covered/hidden; drawImage of a paused video just
+      // repeats its last frame, which also reads as a freeze. Revive any
+      // paused source — play() on a live capture stream resumes immediately.
+      if (this.screenVideo?.paused) void this.screenVideo.play().catch(() => {})
+      if (this.camVideo?.paused) void this.camVideo.play().catch(() => {})
       const { ctx, canvas } = this
       const W = canvas.width
       const H = canvas.height
@@ -272,6 +281,14 @@ export class Compositor {
       }
       this.raf = requestAnimationFrame(loop)
     }
+    // Watchdog backup clock: if the primary clock ever stalls (worker
+    // killed, browser throttles worker messages to a hidden page harder
+    // than expected), a plain interval still gets ~1 tick/sec in a hidden
+    // tab — enough to keep the recording moving at low fps instead of
+    // freezing solid until the window comes back.
+    this.backupIv = setInterval(() => {
+      if (performance.now() - this.lastDrawAt > 900) this.drawFrame()
+    }, 400)
   }
 
   stream(): MediaStream {
@@ -282,6 +299,7 @@ export class Compositor {
     cancelAnimationFrame(this.raf)
     this.clockStop?.()
     this.clockStop = null
+    if (this.backupIv) { clearInterval(this.backupIv); this.backupIv = null }
     this.screenVideo?.pause()
     this.camVideo?.pause()
   }
@@ -364,36 +382,121 @@ export function pickMimeType(): string {
   return candidates.find((c) => window.MediaRecorder?.isTypeSupported(c)) ?? ''
 }
 
-/** Chrome's MediaRecorder writes WebM files whose header Duration is 0,
-    so players and editors report the take as empty or cut it short even
-    though every frame is in the file — the "it didn't capture the whole
-    video" symptom. Patch the EBML Duration element (inside Segment Info)
-    with the real recorded length. Conservative: only overwrites an
-    existing 8-byte-float Duration that currently reads 0; any parse
-    surprise returns the original blob untouched. */
+/** MediaRecorder writes WebM as a live stream and never goes back to fill
+    in the total length: Chromium's muxer OMITS the Segment Info Duration
+    element entirely (verified against a real recording's header bytes,
+    2026-11-04 — Info holds only TimecodeScale + MuxingApp + WritingApp),
+    and other muxers write it as 0. Either way players and editors report
+    the take as empty, endless, or cut short even though every frame is in
+    the file — the "it didn't capture the whole video" symptom.
+    Fix: if a float Duration element exists inside Info and reads 0,
+    overwrite it (8-byte or 4-byte encoding); if Info has NO Duration,
+    insert one — Chromium writes the Segment with an unknown size, so
+    growing Info by the 11-byte element is safe as long as Info's own
+    size field (and a known Segment size, if any) is bumped to match.
+    The search is confined to Info's declared extent — a 0x44 0x89 byte
+    pair elsewhere is compressed frame data, not an element. Duration is
+    expressed in the file's own TimecodeScale units (spec default
+    1,000,000 = 1 unit per ms). Any parse surprise returns the original
+    blob untouched. */
 export async function fixWebmDuration(blob: Blob, durationMs: number): Promise<Blob> {
   if (!blob.type.includes('webm') || !(durationMs > 0)) return blob
   try {
     const buf = new Uint8Array(await blob.arrayBuffer())
     const limit = Math.min(buf.length, 256 * 1024)
-    const find = (bytes: number[], from: number): number => {
-      outer: for (let i = from; i + bytes.length <= limit; i++) {
+    const find = (bytes: number[], from: number, to: number): number => {
+      outer: for (let i = from; i + bytes.length <= to; i++) {
         for (let j = 0; j < bytes.length; j++) if (buf[i + j] !== bytes[j]) continue outer
         return i
       }
       return -1
     }
-    const infoIdx = find([0x15, 0x49, 0xa9, 0x66], 0) // Segment > Info
+    // EBML variable-length size: the position of the first set bit in the
+    // leading byte gives the width (1–8); the remaining bits are the value,
+    // with all-data-bits-set meaning "unknown size".
+    const readVint = (idx: number): { width: number; value: bigint; unknown: boolean } | null => {
+      const b = buf[idx]
+      if (!b) return null
+      let width = 1
+      let mask = 0x80
+      while (width <= 8 && !(b & mask)) { mask >>= 1; width++ }
+      if (width > 8 || idx + width > buf.length) return null
+      let value = BigInt(b & (mask - 1))
+      for (let k = 1; k < width; k++) value = (value << 8n) | BigInt(buf[idx + k])
+      return { width, value, unknown: value === (1n << BigInt(7 * width)) - 1n }
+    }
+    const writeVint = (target: Uint8Array, idx: number, width: number, value: bigint) => {
+      for (let k = width - 1; k >= 0; k--) { target[idx + k] = Number(value & 0xffn); value >>= 8n }
+      target[idx] |= 1 << (8 - width) // restore the width marker bit
+    }
+
+    const infoIdx = find([0x15, 0x49, 0xa9, 0x66], 0, limit) // Segment > Info
     if (infoIdx < 0) return blob
-    const durIdx = find([0x44, 0x89], infoIdx + 4) // Info > Duration
-    if (durIdx < 0) return blob
-    if (buf[durIdx + 2] !== 0x88) return blob // size descriptor: 8-byte float
-    const view = new DataView(buf.buffer, buf.byteOffset + durIdx + 3, 8)
-    if (view.getFloat64(0, false) > 0) return blob // already has a duration
-    // Duration is expressed in TimecodeScale units; Chrome writes 1,000,000
-    // (1 unit = 1 ms), so the value is the duration in milliseconds.
-    view.setFloat64(0, durationMs, false)
-    return new Blob([buf], { type: blob.type })
+    const infoSize = readVint(infoIdx + 4)
+    if (!infoSize || infoSize.unknown) return blob
+    const infoStart = infoIdx + 4 + infoSize.width
+    const infoEnd = infoStart + Number(infoSize.value)
+    if (infoEnd > buf.length) return blob
+
+    // Duration is expressed in TimecodeScale units (Info > TimecodeScale,
+    // an unsigned int; spec default 1,000,000 = 1 unit per ms). Read the
+    // muxer's actual scale when present instead of assuming Chrome's.
+    let scale = 1_000_000
+    const scaleIdx = find([0x2a, 0xd7, 0xb1], infoStart, infoEnd) // Info > TimecodeScale
+    if (scaleIdx >= 0) {
+      const sizeByte = buf[scaleIdx + 3]
+      const len = sizeByte & 0x7f
+      if (sizeByte >= 0x81 && sizeByte <= 0x88 && scaleIdx + 4 + len <= infoEnd) {
+        let v = 0
+        for (let k = 0; k < len; k++) v = v * 256 + buf[scaleIdx + 4 + k]
+        if (v > 0) scale = v
+      }
+    }
+    const value = durationMs * (1_000_000 / scale)
+
+    const durIdx = find([0x44, 0x89], infoStart, infoEnd) // Info > Duration
+    if (durIdx >= 0) {
+      const sizeByte = buf[durIdx + 2]
+      if (sizeByte === 0x88 && durIdx + 11 <= infoEnd) {
+        // 8-byte float
+        const view = new DataView(buf.buffer, buf.byteOffset + durIdx + 3, 8)
+        if (view.getFloat64(0, false) > 0) return blob // already has a duration
+        view.setFloat64(0, value, false)
+      } else if (sizeByte === 0x84 && durIdx + 7 <= infoEnd) {
+        // 4-byte float (some muxers, incl. Firefox-style EBML writers)
+        const view = new DataView(buf.buffer, buf.byteOffset + durIdx + 3, 4)
+        if (view.getFloat32(0, false) > 0) return blob
+        view.setFloat32(0, value, false)
+      } else {
+        return blob
+      }
+      return new Blob([buf], { type: blob.type })
+    }
+
+    // No Duration element: insert one at the end of Info. Both Info's size
+    // and (if it is a known size) the Segment's must grow by the element's
+    // 11 bytes, re-encoded at their original vint widths.
+    const ELEN = 11
+    const newInfoSize = infoSize.value + BigInt(ELEN)
+    if (newInfoSize >= (1n << BigInt(7 * infoSize.width)) - 1n) return blob
+    const segIdx = find([0x18, 0x53, 0x80, 0x67], 0, infoIdx) // Segment
+    let segSize: ReturnType<typeof readVint> = null
+    let newSegSize = 0n
+    if (segIdx >= 0) {
+      segSize = readVint(segIdx + 4)
+      if (segSize && !segSize.unknown) {
+        newSegSize = segSize.value + BigInt(ELEN)
+        if (newSegSize >= (1n << BigInt(7 * segSize.width)) - 1n) return blob
+      }
+    }
+    const out = new Uint8Array(buf.length + ELEN)
+    out.set(buf.subarray(0, infoEnd), 0)
+    out[infoEnd] = 0x44; out[infoEnd + 1] = 0x89; out[infoEnd + 2] = 0x88
+    new DataView(out.buffer, infoEnd + 3, 8).setFloat64(0, value, false)
+    out.set(buf.subarray(infoEnd), infoEnd + ELEN)
+    writeVint(out, infoIdx + 4, infoSize.width, newInfoSize)
+    if (segSize && !segSize.unknown && segIdx >= 0) writeVint(out, segIdx + 4, segSize.width, newSegSize)
+    return new Blob([out], { type: blob.type })
   } catch {
     return blob
   }
