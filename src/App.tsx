@@ -11,6 +11,7 @@ import {
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
 import Editor from './components/Editor'
+import Review from './components/Review'
 import { PRESETS, NEW_PROJECT_SCRIPT, type Project } from './lib/projects'
 import { loadTakes, saveTake, deleteTake as idbDeleteTake, deleteTakesForProject } from './lib/takeStore'
 import { transcribeTake, toSrt, toVtt, transcriptText } from './lib/captions'
@@ -159,8 +160,10 @@ export default function App() {
   // ---- Captions (on-device Whisper; one job at a time) --------------------
   const [captionJob, setCaptionJob] = useState<{ id: string; stage: string; pct: number | null } | null>(null)
   const [captionErr, setCaptionErr] = useState<Record<string, string>>({})
-  const generateCaptions = async (take: Take) => {
-    if (captionJob) return
+  const captionBusyRef = useRef(false)
+  /** Run Whisper for one take; true on success. Shared by the per-take
+   *  button and Review's transcribe-all queue (one job at a time). */
+  const runCaptions = async (take: Take): Promise<boolean> => {
     setCaptionErr((p) => ({ ...p, [take.id]: '' }))
     setCaptionJob({ id: take.id, stage: 'Starting…', pct: null })
     try {
@@ -171,13 +174,32 @@ export default function App() {
         persistTake(updated)
         return updated
       }))
+      return true
     } catch (e) {
       setCaptionErr((p) => ({
         ...p,
         [take.id]: `Captions failed: ${e instanceof Error ? e.message : 'unknown error'} The take itself is untouched — check your connection for the one-time model download and try again.`,
       }))
+      return false
     } finally {
       setCaptionJob(null)
+    }
+  }
+  const generateCaptions = async (take: Take) => {
+    if (captionBusyRef.current) return
+    captionBusyRef.current = true
+    try { await runCaptions(take) } finally { captionBusyRef.current = false }
+  }
+  /** Caption every take in this project that lacks captions, in order.
+   *  A failed take keeps its error on its card; the queue moves on. */
+  const transcribeAllMissing = async () => {
+    if (captionBusyRef.current) return
+    captionBusyRef.current = true
+    try {
+      const missing = takes.filter((t) => t.projectId === project.id && !t.captions?.length)
+      for (const t of missing) await runCaptions(t)
+    } finally {
+      captionBusyRef.current = false
     }
   }
 
@@ -697,6 +719,15 @@ export default function App() {
                 </div>}
           </div>
 
+          <Review
+            projectId={project.id}
+            projectName={project.name}
+            script={script}
+            takes={projectTakes}
+            captionBusy={!!captionJob}
+            onTranscribeAll={() => void transcribeAllMissing()}
+          />
+
           <Editor takes={projectTakes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
         </section>
 
@@ -867,7 +898,7 @@ function TakeCard({ take, onDownload, onDelete, captionJob, captionError, onGene
 
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-panel">
-      <video src={take.url} controls className="aspect-video w-full bg-black">
+      <video id={`democut-video-${take.id}`} src={take.url} controls className="aspect-video w-full bg-black">
         {vttUrl && <track kind="captions" src={vttUrl} label="English (Whisper, on-device)" srcLang="en" default />}
       </video>
       <div className="flex items-center justify-between gap-2 px-3 py-2.5">
