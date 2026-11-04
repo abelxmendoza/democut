@@ -65,10 +65,35 @@ function drawCover(
   ctx.restore()
 }
 
+/** A draw clock that keeps ticking while the window is hidden.
+    requestAnimationFrame stops entirely when the DemoCut window is
+    minimised, on another workspace, or fully covered — which is exactly
+    where it sits while you demo another app fullscreen — and the canvas
+    (and therefore the recording) froze for those whole stretches.
+    A dedicated worker's timers are not tied to page visibility, so the
+    compositor draws on worker ticks and falls back to rAF only if a
+    worker cannot be created. Returns a stop function, or null. */
+function createWorkerClock(intervalMs: number, onTick: () => void): (() => void) | null {
+  try {
+    const code = `setInterval(() => postMessage(0), ${Math.max(8, Math.round(intervalMs))})`
+    const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))
+    const worker = new Worker(url)
+    worker.onmessage = () => onTick()
+    worker.onerror = () => {}
+    return () => {
+      worker.terminate()
+      URL.revokeObjectURL(url)
+    }
+  } catch {
+    return null
+  }
+}
+
 export class Compositor {
   canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
   private raf = 0
+  private clockStop: (() => void) | null = null
   private screenVideo: HTMLVideoElement | null = null
   private camVideo: HTMLVideoElement | null = null
   opts: RecordOptions
@@ -119,8 +144,7 @@ export class Compositor {
     if (camStream) this.setCameraStream(camStream)
   }
 
-  start() {
-    const draw = () => {
+  private drawFrame() {
       const { ctx, canvas } = this
       const W = canvas.width
       const H = canvas.height
@@ -163,7 +187,6 @@ export class Compositor {
           ctx.fillText(name, margin + tagW / 2, H - margin - tagH / 2 + 1)
           ctx.textBaseline = 'alphabetic'
         }
-        this.raf = requestAnimationFrame(draw)
         return
       }
 
@@ -234,9 +257,21 @@ export class Compositor {
         ctx.stroke()
       }
 
-      this.raf = requestAnimationFrame(draw)
+  }
+
+  start() {
+    // Draw one frame immediately, then keep drawing on the worker clock
+    // (rAF fallback) so frames keep flowing while the window is hidden —
+    // see createWorkerClock above.
+    this.drawFrame()
+    this.clockStop = createWorkerClock(1000 / this.opts.fps, () => this.drawFrame())
+    if (!this.clockStop) {
+      const loop = () => {
+        this.drawFrame()
+        this.raf = requestAnimationFrame(loop)
+      }
+      this.raf = requestAnimationFrame(loop)
     }
-    draw()
   }
 
   stream(): MediaStream {
@@ -245,6 +280,8 @@ export class Compositor {
 
   stop() {
     cancelAnimationFrame(this.raf)
+    this.clockStop?.()
+    this.clockStop = null
     this.screenVideo?.pause()
     this.camVideo?.pause()
   }
@@ -312,13 +349,54 @@ export async function listCameras(): Promise<MediaDeviceInfo[]> {
 }
 
 export function pickMimeType(): string {
+  // Order matters for smoothness: MediaRecorder's VP9 encoding is
+  // software-only in practice and saturates the CPU at 720p/1080p next to
+  // the canvas compositing, which showed up as frozen/dropped frames.
+  // H.264-in-MP4 is hardware-encoded on most platforms that offer it,
+  // VP8 is far cheaper than VP9, so VP9 is now the last resort.
   const candidates = [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
+    'video/mp4;codecs=avc1.640028,mp4a.40.2',
     'video/mp4',
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9,opus',
+    'video/webm',
   ]
   return candidates.find((c) => window.MediaRecorder?.isTypeSupported(c)) ?? ''
+}
+
+/** Chrome's MediaRecorder writes WebM files whose header Duration is 0,
+    so players and editors report the take as empty or cut it short even
+    though every frame is in the file — the "it didn't capture the whole
+    video" symptom. Patch the EBML Duration element (inside Segment Info)
+    with the real recorded length. Conservative: only overwrites an
+    existing 8-byte-float Duration that currently reads 0; any parse
+    surprise returns the original blob untouched. */
+export async function fixWebmDuration(blob: Blob, durationMs: number): Promise<Blob> {
+  if (!blob.type.includes('webm') || !(durationMs > 0)) return blob
+  try {
+    const buf = new Uint8Array(await blob.arrayBuffer())
+    const limit = Math.min(buf.length, 256 * 1024)
+    const find = (bytes: number[], from: number): number => {
+      outer: for (let i = from; i + bytes.length <= limit; i++) {
+        for (let j = 0; j < bytes.length; j++) if (buf[i + j] !== bytes[j]) continue outer
+        return i
+      }
+      return -1
+    }
+    const infoIdx = find([0x15, 0x49, 0xa9, 0x66], 0) // Segment > Info
+    if (infoIdx < 0) return blob
+    const durIdx = find([0x44, 0x89], infoIdx + 4) // Info > Duration
+    if (durIdx < 0) return blob
+    if (buf[durIdx + 2] !== 0x88) return blob // size descriptor: 8-byte float
+    const view = new DataView(buf.buffer, buf.byteOffset + durIdx + 3, 8)
+    if (view.getFloat64(0, false) > 0) return blob // already has a duration
+    // Duration is expressed in TimecodeScale units; Chrome writes 1,000,000
+    // (1 unit = 1 ms), so the value is the duration in milliseconds.
+    view.setFloat64(0, durationMs, false)
+    return new Blob([buf], { type: blob.type })
+  } catch {
+    return blob
+  }
 }
 
 export interface TakeMarker {

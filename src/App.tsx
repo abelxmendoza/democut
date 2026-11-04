@@ -5,7 +5,7 @@ import {
   Plus, Pencil, Check, ListOrdered, Captions, Copy, MonitorUp,
 } from 'lucide-react'
 import {
-  Compositor, getScreenStream, getCameraStream, getMicStream, listCameras, pickMimeType,
+  Compositor, getScreenStream, getCameraStream, getMicStream, listCameras, pickMimeType, fixWebmDuration,
   formatTime, formatBytes, captureSurface, type PipSize, type Quality, type SourceMode, type Take, type TakeMarker,
 } from './lib/recorder'
 import { useHotkeys } from 'react-hotkeys-hook'
@@ -508,12 +508,16 @@ export default function App() {
     })
     chunksRef.current = []
     rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data) }
-    rec.onstop = () => {
+    rec.onstop = async () => {
       const type = mimeType || 'video/webm'
-      const blob = new Blob(chunksRef.current, { type })
       const ext = type.includes('mp4') ? 'mp4' : 'webm'
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
       const duration = (Date.now() - startRef.current - pausedTotalRef.current) / 1000
+      // WebM from MediaRecorder carries a 0 header duration, which makes
+      // players/editors treat the take as empty or cut short — patch it
+      // with the real length before the take is saved anywhere.
+      const raw = new Blob(chunksRef.current, { type })
+      const blob = type.includes('webm') ? await fixWebmDuration(raw, duration * 1000) : raw
       const take: Take = {
         id: crypto.randomUUID(),
         url: URL.createObjectURL(blob),
@@ -567,6 +571,10 @@ export default function App() {
 
   const stopRecording = () => {
     if (timerRef.current) window.clearInterval(timerRef.current)
+    const rec = recorderRef.current
+    if (rec && rec.state !== 'inactive') {
+      try { rec.requestData() } catch { /* flush is best-effort */ }
+    }
     recorderRef.current?.stop() // onstop saves the take + tears down
   }
 
