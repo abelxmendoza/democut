@@ -158,6 +158,31 @@ export default function App() {
   }
 
   // ---- Captions (on-device Whisper; one job at a time) --------------------
+  // ---- Update banner -------------------------------------------------------
+  // The bundle carries its build stamp (__BUILD_ID__); version.json on the
+  // server carries the newest deploy's stamp. When they differ, a newer
+  // build exists — show a banner and let the user reload when ready.
+  // Nothing auto-reloads, nothing appears mid-take, and on desktop /
+  // file:// the fetch just fails, so the banner simply never exists there.
+  const [updateReady, setUpdateReady] = useState(false)
+  const [updateDismissed, setUpdateDismissed] = useState(false)
+  useEffect(() => {
+    let live = true
+    const check = async () => {
+      try {
+        const r = await fetch(`version.json?ts=${Date.now()}`, { cache: 'no-store' })
+        if (!r.ok) return
+        const v = (await r.json()) as { build?: string }
+        if (live && v.build && v.build !== __BUILD_ID__) setUpdateReady(true)
+      } catch { /* offline or desktop build: no banner */ }
+    }
+    void check()
+    const onFocus = () => { void check() }
+    window.addEventListener('focus', onFocus)
+    const iv = window.setInterval(() => { void check() }, 5 * 60 * 1000)
+    return () => { live = false; window.removeEventListener('focus', onFocus); window.clearInterval(iv) }
+  }, [])
+
   const [captionJob, setCaptionJob] = useState<{ id: string; stage: string; pct: number | null } | null>(null)
   const [captionErr, setCaptionErr] = useState<Record<string, string>>({})
   const captionBusyRef = useRef(false)
@@ -634,6 +659,16 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {updateReady && !updateDismissed && (phase === 'idle' || phase === 'ready') && (
+        <div className="border-b border-teal/40 bg-teal/10 px-5 py-2.5">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 text-sm">
+            <span className="text-teal-100"><strong>A new version of DemoCut is available.</strong> You're still on the previous build — nothing changes until you reload.</span>
+            <button onClick={() => window.location.reload()} className="rounded-lg bg-teal px-3 py-1.5 text-xs font-semibold text-ink hover:bg-teal-bright">Reload to update</button>
+            <button onClick={() => setUpdateDismissed(true)} className="rounded-lg border border-line px-3 py-1.5 text-xs text-slate-300 hover:bg-panel2">Later</button>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto grid max-w-7xl gap-5 px-5 py-5 lg:grid-cols-[1fr_340px]">
         <section>
