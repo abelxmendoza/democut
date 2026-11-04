@@ -5,8 +5,8 @@ import {
   Plus, Pencil, Check, ListOrdered, Captions, Copy, MonitorUp,
 } from 'lucide-react'
 import {
-  Compositor, getScreenStream, getCameraStream, pickMimeType,
-  formatTime, formatBytes, captureSurface, type PipSize, type Quality, type Take, type TakeMarker,
+  Compositor, getScreenStream, getCameraStream, getMicStream, listCameras, pickMimeType,
+  formatTime, formatBytes, captureSurface, type PipSize, type Quality, type SourceMode, type Take, type TakeMarker,
 } from './lib/recorder'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
@@ -34,6 +34,27 @@ export default function App() {
   const [cameraOn, setCameraOn] = useState(true)
   const [micOn, setMicOn] = useState(true)
   const [mirror, setMirror] = useState(true)
+  // Recording source: screen + facecam, screen only, or camera only
+  // (talking-head takes — no screen share is ever requested in that mode).
+  const [sourceMode, setSourceModeState] = useState<SourceMode>(() => {
+    const v = localStorage.getItem('democut-source-mode')
+    return v === 'screen-only' || v === 'camera-only' ? v : 'screen-camera'
+  })
+  const setSourceMode = (m: SourceMode) => {
+    setSourceModeState(m)
+    localStorage.setItem('democut-source-mode', m)
+  }
+  // Whether the camera feeds the picture in the current mode: forced on for
+  // camera-only, forced off for screen-only, the Camera toggle otherwise.
+  const effCameraOn = sourceMode === 'camera-only' ? true : sourceMode === 'screen-only' ? false : cameraOn
+  const setupLabel = sourceMode === 'camera-only' ? 'Set up camera' : sourceMode === 'screen-only' ? 'Set up screen' : 'Set up screen + camera'
+  // Camera choice (multi-camera machines): '' = system default. Device list
+  // is (re)read after a successful camera open, when labels become available.
+  const [cameraId, setCameraIdState] = useState(() => localStorage.getItem('democut-camera-id') ?? '')
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
+  const refreshCameras = useCallback(async () => {
+    try { setCameras(await listCameras()) } catch { /* picker just stays hidden */ }
+  }, [])
   const [nameTag, setNameTag] = useState(() => localStorage.getItem('democut-name-tag') ?? 'Abel Mendoza')
   const [micLevel, setMicLevel] = useState(0)
   const [surface, setSurface] = useState('unknown')
@@ -256,26 +277,61 @@ export default function App() {
 
   const setup = async () => {
     setError('')
+    const mode = sourceMode
+    // Open the chosen camera; if the saved device is gone (unplugged USB
+    // cam), fall back to the default camera instead of failing setup.
+    const openCamera = async (fullFrame: boolean): Promise<MediaStream> => {
+      const geo = fullFrame ? { quality } : {}
+      try {
+        return await getCameraStream(micOn, { ...geo, deviceId: cameraId || undefined })
+      } catch (e) {
+        if (cameraId) return getCameraStream(micOn, geo)
+        throw e
+      }
+    }
     try {
-      const screen = await getScreenStream(quality, fps, micOn)
-      screenRef.current = screen
-      setSurface(captureSurface(screen))
-      wireScreenEnded(screen)
+      let screen: MediaStream | null = null
+      if (mode !== 'camera-only') {
+        screen = await getScreenStream(quality, fps, micOn)
+        screenRef.current = screen
+        setSurface(captureSurface(screen))
+        wireScreenEnded(screen)
+      }
 
-      let cam: MediaStream | null = null
-      if (cameraOn || micOn) {
+      let cam: MediaStream | null = null // stream held for its audio tracks + mic meter
+      let camVideo: MediaStream | null = null // stream handed to the compositor
+      if (mode === 'camera-only') {
+        // The camera is the whole take — if it can't open, nothing can record.
+        cam = await openCamera(true)
+        camRef.current = cam
+        camVideo = cam
+        if (micOn) startMicMeter(cam)
+        void refreshCameras()
+      } else if (mode === 'screen-only') {
+        // No camera is ever requested in this mode; the mic (if on) is its
+        // own audio-only stream.
+        if (micOn) {
+          try {
+            cam = await getMicStream()
+            camRef.current = cam
+            startMicMeter(cam)
+          } catch { /* mic denied — screen/tab audio may still be recorded */ }
+        }
+      } else if (cameraOn || micOn) {
         try {
-          cam = await getCameraStream(micOn)
+          cam = await openCamera(false)
           camRef.current = cam
+          camVideo = cam
           if (!cameraOn) cam.getVideoTracks().forEach((t) => (t.enabled = false))
           if (micOn) startMicMeter(cam)
+          void refreshCameras()
         } catch {
-          if (cameraOn) setError('Camera/mic permission was denied — recording screen only. Check browser permissions and try again.')
+          setError('Camera/mic permission was denied — recording screen only. Check browser permissions and try again.')
         }
       }
 
-      const comp = new Compositor({ quality, fps, pipSize, cameraOn, micOn, mirrorCamera: mirror, nameTag })
-      comp.attach(screen, cam)
+      const comp = new Compositor({ quality, fps, pipSize, cameraOn: effCameraOn, micOn, mirrorCamera: mirror, nameTag, mode })
+      comp.attach(screen, camVideo)
       comp.start()
       compositorRef.current = comp
 
@@ -289,7 +345,43 @@ export default function App() {
       }
       setPhase('ready')
     } catch (e) {
-      setError('Screen share was cancelled or blocked. Click "Set up screen + camera" and pick the window/screen you want to demo.')
+      // Stop anything partially acquired — no camera light left on, ever.
+      screenRef.current?.getTracks().forEach((t) => t.stop())
+      camRef.current?.getTracks().forEach((t) => t.stop())
+      screenRef.current = null
+      camRef.current = null
+      if (mode === 'camera-only') {
+        setError('Camera was blocked or unavailable — in Camera only mode there is nothing to record without it. Check that no other app is using the camera, and that DemoCut (or your browser) is allowed to use the camera — and microphone, if it is on — in your system settings, then try again.')
+      } else {
+        setError(`Screen share was cancelled or blocked. Click "${setupLabel}" and pick the window/screen you want to demo.`)
+      }
+    }
+  }
+
+  // Pick a different camera. In 'ready' the preview swaps live (the canvas
+  // stream the recorder consumes never changes); while recording, the
+  // recorder already holds the current mic track, so the choice is saved
+  // and applies from the next setup.
+  const changeCamera = async (id: string) => {
+    setCameraIdState(id)
+    localStorage.setItem('democut-camera-id', id)
+    if (phase !== 'ready' || !compositorRef.current) return
+    try {
+      const cam = await getCameraStream(micOn, {
+        deviceId: id || undefined,
+        ...(sourceMode === 'camera-only' ? { quality } : {}),
+      })
+      const old = camRef.current
+      camRef.current = cam
+      if (!effCameraOn) cam.getVideoTracks().forEach((t) => (t.enabled = false))
+      compositorRef.current.setCameraStream(cam)
+      audioCtxRef.current?.close().catch(() => {})
+      audioCtxRef.current = null
+      if (micOn) startMicMeter(cam)
+      old?.getTracks().forEach((t) => t.stop())
+      setError('')
+    } catch {
+      setError('That camera could not be opened — still using the previous one. It may be busy in another app.')
     }
   }
 
@@ -350,7 +442,7 @@ export default function App() {
     markersRef.current = guideMode === 'guide' && beats.length ? [{ t: 0, label: beats[0] }] : []
     // keep compositor options in sync with toggles changed after setup
     comp.opts.pipSize = pipSize
-    comp.opts.cameraOn = cameraOn
+    comp.opts.cameraOn = effCameraOn
     comp.opts.mirrorCamera = mirror
     comp.opts.nameTag = nameTag
 
@@ -511,7 +603,7 @@ export default function App() {
             <div className="grid h-10 w-10 place-items-center rounded-xl bg-teal text-ink"><Video size={22} strokeWidth={2.4} /></div>
             <div>
               <div className="text-lg font-bold leading-none">DemoCut</div>
-              <div className="mt-1 text-xs text-slate-400">Screen + facecam demos. One click, countdown, done.</div>
+              <div className="mt-1 text-xs text-slate-400">Screen, facecam, or camera-only demos. One click, countdown, done.</div>
             </div>
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -527,12 +619,20 @@ export default function App() {
             <div ref={previewRef} className="absolute inset-0" />
             {phase === 'idle' && (
               <div className="absolute inset-0 grid place-items-center p-8 text-center">
-                <div>
-                  <Monitor className="mx-auto text-slate-600" size={52} />
-                  <p className="mt-4 font-semibold">No screen connected yet</p>
-                  <p className="mx-auto mt-1 max-w-md text-sm text-slate-400">Set up once, then every demo is: hit Record, wait for the countdown, talk. Your face is composited into the top-right of the actual recording file — nothing to edit afterwards.</p>
-                  <p className="mx-auto mt-3 max-w-md rounded-xl border border-teal/30 bg-teal/10 px-3 py-2 text-xs leading-relaxed text-teal-100"><strong>To follow you across apps:</strong> in the share picker choose <strong>Entire Screen</strong>. A single window or tab can only ever show itself — switch away (say, to a Facebook login in another window) and the recording can't see it until you come back. <strong>Switch screen</strong> also lets you jump surfaces mid-recording without stopping the take.</p>
-                </div>
+                {sourceMode === 'camera-only' ? (
+                  <div>
+                    <Camera className="mx-auto text-slate-600" size={52} />
+                    <p className="mt-4 font-semibold">No camera connected yet</p>
+                    <p className="mx-auto mt-1 max-w-md text-sm text-slate-400">Camera-only takes are for talking straight to your audience — intros, outros, explainers. No screen share is asked for: you fill the whole frame, recorded at the quality you picked, so camera takes and screen takes stitch together in the editor.</p>
+                  </div>
+                ) : (
+                  <div>
+                    <Monitor className="mx-auto text-slate-600" size={52} />
+                    <p className="mt-4 font-semibold">No screen connected yet</p>
+                    <p className="mx-auto mt-1 max-w-md text-sm text-slate-400">Set up once, then every demo is: hit Record, wait for the countdown, talk. Your face is composited into the top-right of the actual recording file — nothing to edit afterwards.</p>
+                    <p className="mx-auto mt-3 max-w-md rounded-xl border border-teal/30 bg-teal/10 px-3 py-2 text-xs leading-relaxed text-teal-100"><strong>To follow you across apps:</strong> in the share picker choose <strong>Entire Screen</strong>. A single window or tab can only ever show itself — switch away (say, to a Facebook login in another window) and the recording can't see it until you come back. <strong>Switch screen</strong> also lets you jump surfaces mid-recording without stopping the take.</p>
+                  </div>
+                )}
               </div>
             )}
             {phase === 'countdown' && (
@@ -540,8 +640,8 @@ export default function App() {
                 <div className="text-center"><div className="font-mono text-8xl font-black text-teal-bright">{count}</div><div className="mt-2 text-sm text-slate-300">Get ready…</div></div>
               </div>
             )}
-            {phase === 'ready' && <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 text-xs text-teal-bright"><CheckCircle2 size={13} /> Preview live — check your facecam (top right), then Record</div>}
-            {(phase === 'ready' || recording) && (
+            {phase === 'ready' && <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 text-xs text-teal-bright"><CheckCircle2 size={13} /> {sourceMode === 'camera-only' ? 'Preview live — you fill the frame. Check your framing, then Record' : sourceMode === 'screen-only' ? 'Preview live — screen only. Check the window, then Record' : 'Preview live — check your facecam (top right), then Record'}</div>}
+            {(phase === 'ready' || recording) && sourceMode !== 'camera-only' && (
               <div className={`absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${surface === 'monitor' ? 'bg-teal/80 text-ink' : 'bg-amber-500/90 text-ink'}`}>
                 {surface === 'monitor'
                   ? <>Following your whole screen — app &amp; window switches will be recorded</>
@@ -554,17 +654,17 @@ export default function App() {
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {phase === 'idle' && (
-              <button onClick={setup} className="flex items-center gap-2 rounded-xl bg-teal px-5 py-3 font-semibold text-ink hover:bg-teal-bright"><Monitor size={18} /> Set up screen + camera</button>
+              <button onClick={setup} className="flex items-center gap-2 rounded-xl bg-teal px-5 py-3 font-semibold text-ink hover:bg-teal-bright">{sourceMode === 'camera-only' ? <Camera size={18} /> : <Monitor size={18} />} {setupLabel}</button>
             )}
             {phase === 'ready' && (<>
               <button onClick={beginRecording} className="flex items-center gap-2 rounded-xl bg-red-500 px-5 py-3 font-semibold text-white hover:bg-red-400"><Circle size={17} fill="currentColor" /> Record (3-2-1)</button>
-              <button onClick={switchScreen} className="flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm text-slate-200 hover:bg-panel2"><MonitorUp size={15} /> Switch screen</button>
+              {sourceMode !== 'camera-only' && <button onClick={switchScreen} className="flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm text-slate-200 hover:bg-panel2"><MonitorUp size={15} /> Switch screen</button>}
               <button onClick={teardown} className="rounded-xl border border-line px-4 py-3 text-sm text-slate-300 hover:bg-panel2">Disconnect</button>
             </>)}
             {recording && (<>
               <button onClick={pauseResume} className="flex items-center gap-2 rounded-xl bg-panel2 px-5 py-3 font-semibold ring-1 ring-line hover:bg-panel">{phase === 'paused' ? <><Play size={17} /> Resume</> : <><Pause size={17} /> Pause</>}</button>
               <button onClick={stopRecording} className="flex items-center gap-2 rounded-xl bg-red-500 px-5 py-3 font-semibold text-white hover:bg-red-400"><Square size={16} fill="currentColor" /> Stop &amp; save take</button>
-              <button onClick={switchScreen} className="flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm text-slate-200 hover:bg-panel2"><MonitorUp size={15} /> Switch screen</button>
+              {sourceMode !== 'camera-only' && <button onClick={switchScreen} className="flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-sm text-slate-200 hover:bg-panel2"><MonitorUp size={15} /> Switch screen</button>}
             </>)}
             {phase === 'countdown' && <span className="px-2 py-3 text-sm text-slate-400">Recording starts automatically…</span>}
 
@@ -605,16 +705,41 @@ export default function App() {
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Settings2 size={16} className="text-teal-bright" /> Setup</h3>
             <p className="mt-1 text-[11px] text-slate-500">Change these before “Set up”, or change facecam size live before you hit Record.</p>
             <div className="mt-3 space-y-3 text-sm">
+              <div>
+                <div className="mb-1.5">Recording source</div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {([['screen-camera', 'Screen + camera'], ['screen-only', 'Screen only'], ['camera-only', 'Camera only']] as [SourceMode, string][]).map(([m, label]) => (
+                    <button key={m} onClick={() => setSourceMode(m)} disabled={phase !== 'idle'} className={`rounded-lg px-2 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50 ${sourceMode === m ? 'bg-teal font-semibold text-ink' : 'border border-line text-slate-300 hover:bg-panel2'}`}>{label}</button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                  {sourceMode === 'camera-only'
+                    ? 'Talking-head takes: you fill the frame and no screen share is ever asked for.'
+                    : sourceMode === 'screen-only'
+                      ? 'Just the screen — no camera is requested at all.'
+                      : 'The screen, with your face in the top-right corner.'}
+                  {phase !== 'idle' && ' Disconnect to change source.'}
+                </p>
+              </div>
               <label className="flex items-center justify-between gap-3">Quality
                 <select value={quality} onChange={(e) => setQuality(e.target.value as Quality)} className="rounded-lg border border-line bg-panel2 px-2 py-1.5 text-xs"><option value="1080p">1080p</option><option value="720p">720p</option></select></label>
               <label className="flex items-center justify-between gap-3">Frame rate
                 <select value={fps} onChange={(e) => setFps(Number(e.target.value) as 30 | 60)} className="rounded-lg border border-line bg-panel2 px-2 py-1.5 text-xs"><option value={30}>30 fps</option><option value={60}>60 fps</option></select></label>
-              <label className="flex items-center justify-between gap-3">Facecam size (top-right)
-                <select value={pipSize} onChange={(e) => setPipSize(e.target.value as PipSize)} className="rounded-lg border border-line bg-panel2 px-2 py-1.5 text-xs"><option value="s">Small</option><option value="m">Medium</option><option value="l">Large</option></select></label>
-              <Toggle label="Camera" icon={cameraOn ? <Video size={15} /> : <VideoOff size={15} />} on={cameraOn} set={setCameraOn} />
+              {sourceMode !== 'camera-only' && (
+                <label className="flex items-center justify-between gap-3">Facecam size (top-right)
+                  <select value={pipSize} onChange={(e) => setPipSize(e.target.value as PipSize)} className="rounded-lg border border-line bg-panel2 px-2 py-1.5 text-xs"><option value="s">Small</option><option value="m">Medium</option><option value="l">Large</option></select></label>
+              )}
+              <Toggle label="Camera" icon={effCameraOn ? <Video size={15} /> : <VideoOff size={15} />} on={effCameraOn} set={setCameraOn} disabled={sourceMode !== 'screen-camera'} />
               <Toggle label="Microphone" icon={micOn ? <Mic size={15} /> : <MicOff size={15} />} on={micOn} set={setMicOn} />
               <Toggle label="Mirror my camera" icon={<Camera size={15} />} on={mirror} set={setMirror} />
-              <label className="block">Name tag above facecam
+              {sourceMode !== 'screen-only' && cameras.length > 1 && (
+                <label className="flex items-center justify-between gap-3">Camera device
+                  <select value={cameraId} disabled={phase !== 'idle' && phase !== 'ready'} onChange={(e) => void changeCamera(e.target.value)} className="max-w-[170px] rounded-lg border border-line bg-panel2 px-2 py-1.5 text-xs disabled:opacity-50">
+                    <option value="">Default camera</option>
+                    {cameras.map((c, i) => <option key={c.deviceId || `cam-${i}`} value={c.deviceId}>{c.label || `Camera ${i + 1}`}</option>)}
+                  </select></label>
+              )}
+              <label className="block">{sourceMode === 'camera-only' ? 'Name tag (bottom-left of frame)' : 'Name tag above facecam'}
                 <input value={nameTag} onChange={(e) => { setNameTag(e.target.value); localStorage.setItem('democut-name-tag', e.target.value) }} placeholder="Your name — blank for none" className="mt-1.5 w-full rounded-lg border border-line bg-panel2 px-2.5 py-1.5 text-xs outline-none focus:border-teal" />
               </label>
             </div>
@@ -693,7 +818,7 @@ export default function App() {
             <h3 className="text-sm font-semibold text-slate-100">Fast demo workflow</h3>
             <ol className="mt-2 list-decimal space-y-1 pl-4">
               <li>Open the thing you're demoing full-screen.</li>
-              <li>Set up screen + camera, pick that window.</li>
+              <li>Pick a source — screen + camera, screen only, or camera only for a talking-head take — then set up.</li>
               <li>Record → 3-2-1 → talk. Pause if you flub a section.</li>
               <li>Stop — the take is already composited. Download &amp; post.</li>
             </ol>
@@ -784,9 +909,9 @@ function TakeCard({ take, onDownload, onDelete, captionJob, captionError, onGene
   )
 }
 
-function Toggle({ label, icon, on, set }: { label: string; icon: React.ReactNode; on: boolean; set: (v: boolean) => void }) {
+function Toggle({ label, icon, on, set, disabled }: { label: string; icon: React.ReactNode; on: boolean; set: (v: boolean) => void; disabled?: boolean }) {
   return (
-    <button onClick={() => set(!on)} className="flex w-full items-center justify-between gap-3 text-left">
+    <button onClick={() => set(!on)} disabled={disabled} className="flex w-full items-center justify-between gap-3 text-left disabled:cursor-not-allowed disabled:opacity-50">
       <span className="flex items-center gap-2">{icon}{label}</span>
       <span className={`relative h-6 w-11 rounded-full transition ${on ? 'bg-teal' : 'bg-slate-700'}`}><span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} /></span>
     </button>

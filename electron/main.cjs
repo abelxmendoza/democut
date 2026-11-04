@@ -53,6 +53,24 @@ app.whenReady().then(() => {
     }
   })
 
+  // Camera + microphone: getUserMedia in the renderer (recorder.ts) asks for
+  // the 'media' permission. Without a handler, packaged Electron denies it
+  // silently and the facecam / camera-only mode can never start. Grant media
+  // only to DemoCut's own pages (the packaged file:// app, or the Vite dev
+  // server); everything else is denied. On macOS the OS-level prompt is
+  // still governed by the NSCamera/NSMicrophone usage descriptions in
+  // package.json's build config.
+  const isOwnContent = (wc) => {
+    const url = (wc && wc.getURL()) || ''
+    return url.startsWith('file://') || url.startsWith('http://localhost:')
+  }
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(permission === 'media' && isOwnContent(wc))
+  })
+  session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+    return permission === 'media' && isOwnContent(wc)
+  })
+
   const win = createWindow()
 
   const send = (channel) => {
