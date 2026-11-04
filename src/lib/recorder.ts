@@ -27,9 +27,42 @@ export interface RecordOptions {
   nameTag?: string
 }
 
-const PIP_SCALE: Record<PipSize, number> = { s: 0.16, m: 0.22, l: 0.3 }
+export const PIP_SCALE: Record<PipSize, number> = { s: 0.16, m: 0.22, l: 0.3 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+export interface FrameRect { x: number; y: number; w: number; h: number }
+
+/** Where the compositor puts the facecam PiP (and its name tag) in a frame
+    of the given size — exported so Take Rescue can locate the facecam that
+    older takes burned into the corner. Mirrors Compositor.drawFrame()
+    exactly: same PIP_SCALE fractions, same margin (1.8% of frame width),
+    same 4:3 camera box, and the name-tag allowance (tag directly above
+    the PiP, same width; tag height from the nominal font size — a very
+    long name shrinks the font, and therefore the tag, in drawFrame; this
+    is the un-shrunk case and Rescue's manual sliders absorb the rest). */
+export function pipGeometry(
+  frameW: number,
+  frameH: number,
+  size: PipSize,
+  hasNameTag: boolean,
+): { pip: FrameRect; tag: FrameRect | null; margin: number } {
+  void frameH // all compositor geometry is width-derived; height kept for call-site clarity
+  const margin = Math.round(frameW * 0.018)
+  const pipW = Math.round(frameW * PIP_SCALE[size])
+  const pipH = Math.round((pipW * 3) / 4) // 4:3 camera box
+  const x = frameW - pipW - margin
+  let y = margin
+  let tag: FrameRect | null = null
+  if (hasNameTag) {
+    const fontPx = Math.round(pipW * 0.088)
+    const tagH = Math.round(fontPx * 1.75)
+    const gap = Math.round(frameW * 0.006)
+    tag = { x, y: margin, w: pipW, h: tagH }
+    y = margin + tagH + gap
+  }
+  return { pip: { x, y, w: pipW, h: pipH }, tag, margin }
+}
+
+export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   const rr = Math.min(r, w / 2, h / 2)
   ctx.beginPath()
   ctx.moveTo(x + rr, y)
