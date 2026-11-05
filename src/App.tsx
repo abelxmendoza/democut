@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Circle, Pause, Play, Square, Download, Trash2, Monitor, Video, VideoOff,
   Mic, MicOff, FileText, Zap, Clock3, Camera, Settings2, CheckCircle2, Clapperboard,
-  Plus, Pencil, Check, ListOrdered, Captions, Copy, MonitorUp,
+  Plus, Pencil, Check, ListOrdered, Captions, Copy, MonitorUp, LifeBuoy,
 } from 'lucide-react'
 import {
   Compositor, getScreenStream, getCameraStream, getMicStream, listCameras, pickMimeType, fixWebmDuration,
@@ -12,6 +12,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import { Upload } from 'lucide-react'
 import Editor from './components/Editor'
 import Finish from './components/Finish'
+import Rescue from './components/Rescue'
 import Review from './components/Review'
 import { PRESETS, NEW_PROJECT_SCRIPT, type Project } from './lib/projects'
 import { loadTakes, saveTake, deleteTake as idbDeleteTake, deleteTakesForProject } from './lib/takeStore'
@@ -627,6 +628,33 @@ export default function App() {
     setTakes((prev) => [take, ...prev])
   }
 
+  // Take Rescue: which library take the Rescue panel is pointed at, set by
+  // the Rescue button on a take card.
+  const [rescueFocusId, setRescueFocusId] = useState<string | null>(null)
+
+  const addRescuedTake = (blob: Blob, durationSec: number) => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const take: Take = {
+      id: crypto.randomUUID(),
+      url: URL.createObjectURL(blob),
+      blob,
+      name: `democut-RESCUED-${stamp}.webm`,
+      duration: durationSec,
+      size: blob.size,
+      createdAt: new Date(),
+      projectId: project.id,
+    }
+    persistTake(take)
+    setTakes((prev) => [take, ...prev])
+  }
+
+  /** Rescue shortcut: preselect Screen-only and jump to the top, so a
+   *  clean capture of the app can be recorded as replacement visuals. */
+  const recordScreenOnly = () => {
+    setSourceMode('screen-only')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   /** Director: add a generated blob (intro/credits card, assembled draft)
    *  as a named take in this project; returns the new take's id so the
    *  caller can slot it into Finish immediately. */
@@ -805,6 +833,10 @@ export default function App() {
                   {projectTakes.map((t) => (
                     <TakeCard key={t.id} take={t}
                       onDownload={() => download(t)}
+                      onRescue={() => {
+                        setRescueFocusId(t.id)
+                        requestAnimationFrame(() => document.getElementById('take-rescue')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+                      }}
                       onDelete={() => { void idbDeleteTake(t.id); setTakes((p) => p.filter((x) => x.id !== t.id)) }}
                       captionJob={captionJob}
                       captionError={captionErr[t.id] ?? ''}
@@ -825,6 +857,10 @@ export default function App() {
           <Editor takes={projectTakes} onExported={addEditedTake} title={videoTitle} onTitleChange={setVideoTitle} />
 
           <Finish projectId={project.id} projectName={project.name} project={project} script={script} takes={projectTakes} onImportBody={importBodyTake} onExported={addEditedTake} onAddTake={addGeneratedTake} />
+
+          <div id="take-rescue" className="scroll-mt-4">
+            <Rescue project={project} takes={projectTakes} focusTakeId={rescueFocusId} onImportVideo={importBodyTake} onExported={addRescuedTake} onRecordScreenOnly={recordScreenOnly} />
+          </div>
         </section>
 
         <aside className="space-y-4">
@@ -957,9 +993,10 @@ export default function App() {
   )
 }
 
-function TakeCard({ take, onDownload, onDelete, captionJob, captionError, onGenerateCaptions }: {
+function TakeCard({ take, onDownload, onRescue, onDelete, captionJob, captionError, onGenerateCaptions }: {
   take: Take
   onDownload: () => void
+  onRescue: () => void
   onDelete: () => void
   captionJob: { id: string; stage: string; pct: number | null } | null
   captionError: string
@@ -1005,6 +1042,7 @@ function TakeCard({ take, onDownload, onDelete, captionJob, captionError, onGene
         </div>
         <div className="flex shrink-0 gap-1">
           <button onClick={onDownload} title="Download" className="rounded-lg bg-teal p-2 text-ink hover:bg-teal-bright"><Download size={15} /></button>
+          <button onClick={onRescue} title="Rescue — rebuild this take if its screen didn't record" className="rounded-lg border border-line p-2 text-slate-300 hover:border-teal hover:text-teal-bright"><LifeBuoy size={15} /></button>
           <button onClick={onDelete} title="Delete take" className="rounded-lg border border-line p-2 text-slate-400 hover:text-red-300"><Trash2 size={15} /></button>
         </div>
       </div>
